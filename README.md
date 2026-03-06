@@ -6,7 +6,8 @@ A smart git commit, push, and PR tool. Works as a standalone CLI, with any AI ag
 
 - Reads your staged diff and branch name
 - Generates a structured commit message (via Claude, GPT-4o, or your `$EDITOR`)
-- Extracts a Jira issue ID from the branch name and prefixes the commit
+- Extracts a ticket/issue ID from the branch name and prefixes the commit
+- Works with any ticketing system — Jira, Linear, GitHub Issues, YouTrack, and more
 - Commits, pushes, and optionally opens a PR/MR
 - Supports **GitHub**, **GitLab**, and **Bitbucket** (auto-detected from remote URL)
 
@@ -39,7 +40,7 @@ git add -p
 # Standalone — LLM generates the commit message
 git-agent
 
-# With Jira context
+# With ticket context (Jira, Linear, GitHub Issues, etc.)
 git-agent "AUTH-42: adds Google SSO via short-lived JWTs in httpOnly cookies"
 
 # Commit + push + open PR
@@ -86,8 +87,15 @@ export GITLAB_TOKEN=glpat-...
 export BITBUCKET_USER=your-username
 export BITBUCKET_TOKEN=your-app-password
 
-# Optional: enables clickable Jira links in PR bodies
-export JIRA_BASE_URL=https://yourorg.atlassian.net
+# Optional: clickable ticket links in PR bodies — use {id} as the placeholder
+export TICKET_URL_TEMPLATE=https://yourorg.atlassian.net/browse/{id}  # Jira
+# export TICKET_URL_TEMPLATE=https://linear.app/myteam/issue/{id}     # Linear
+# export TICKET_URL_TEMPLATE=https://github.com/org/repo/issues/{id}  # GitHub Issues
+
+# Optional: override the default ticket ID regex ([A-Z]+-[0-9]+)
+# export TICKET_PATTERN='[0-9]+'       # plain issue numbers (GitHub / GitLab)
+# export TICKET_PATTERN='sc-[0-9]+'    # Shortcut
+# export TICKET_PATTERN='AB#[0-9]+'    # Azure DevOps
 ```
 
 If no API key is set, the script falls back to your `$EDITOR` for message input.
@@ -102,14 +110,22 @@ If no API key is set, the script falls back to your `$EDITOR` for message input.
 
 The platform is auto-detected from `git remote get-url origin`.
 
-## Branch naming
+## Ticket ID extraction
 
-Jira ID is extracted with the regex `[A-Z]+-[0-9]+` from the branch name:
+A ticket/issue ID is extracted from the branch name via the `TICKET_PATTERN` regex
+(default: `[A-Z]+-[0-9]+`, which covers Jira, Linear, YouTrack, and similar systems):
 
 ```text
 feature/AUTH-42/google-sso   →   [AUTH-42] ...
 fix/PLAT-7-null-pointer      →   [PLAT-7] ...
 main                         →   (no prefix)
+```
+
+For other systems, override `TICKET_PATTERN`:
+
+```text
+TICKET_PATTERN='[0-9]+'      issue/123-fix-login   →   [123] ...   (GitHub/GitLab)
+TICKET_PATTERN='sc-[0-9]+'   sc-456/dark-mode      →   [sc-456] ...  (Shortcut)
 ```
 
 ## Using with AI agents

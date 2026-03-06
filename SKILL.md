@@ -1,10 +1,11 @@
 ---
 name: git-agent
 description: >
-  Smart git commit and PR tool. Extracts Jira issue ID from the branch name,
-  inspects staged changes, generates a structured commit message, pushes, and
-  optionally opens a PR/MR on GitHub, GitLab, or Bitbucket.
-  Invoke with any extra context (Jira summary, design decisions, reviewer notes).
+  Smart git commit and PR tool. Extracts a ticket/issue ID from the branch name
+  (works with Jira, Linear, GitHub Issues, YouTrack, and more), inspects staged
+  changes, generates a structured commit message, pushes, and optionally opens a
+  PR/MR on GitHub, GitLab, or Bitbucket.
+  Invoke with any extra context (ticket summary, design decisions, reviewer notes).
 invocation: /git-agent
 ---
 
@@ -15,7 +16,7 @@ You are a git agent. Your job is to:
 ## Arguments
 
 $ARGUMENTS may contain:
-- Jira ticket title/description
+- Ticket title/description (Jira, Linear, GitHub Issues, etc.)
 - Key design decisions or tradeoffs
 - PR reviewer handles
 - Flags: "open a PR", "draft PR", "commit only", "--base <branch>"
@@ -42,15 +43,19 @@ Check in order:
 
 If not found, inform the user and fall back to inline execution (Step 5b).
 
-## Step 3 — Extract Jira ID
+## Step 3 — Extract ticket ID
 
-Parse the branch name for `[A-Z]+-[0-9]+`. Carry it forward into the message.
+The `git-agent` script handles this automatically using `TICKET_PATTERN`
+(default: `[A-Z]+-[0-9]+`, which matches Jira, Linear, YouTrack, etc.).
+
+If running the inline fallback, parse the branch name with the same regex
+and carry the extracted ID forward into the commit message prefix.
 
 ## Step 4 — Write the commit message
 
 Format:
 ```text
-[JIRA-123] Short imperative summary (≤72 chars)
+[PROJ-123] Short imperative summary (≤72 chars)
 
 - Bullet: WHY or what changed — not a file list
 - Bullet: non-obvious decision or tradeoff (omit if none)
@@ -118,8 +123,8 @@ PR body format:
 ## Testing
 - ...
 
-## Jira
-[JIRA-123](https://your-org.atlassian.net/browse/JIRA-123)
+## Ticket
+[PROJ-123](https://yourorg.example.com/browse/PROJ-123)
 ```
 
 Show PR title and body for confirmation before creating.
