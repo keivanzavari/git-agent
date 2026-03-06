@@ -309,9 +309,13 @@ detect_platform() {
 }
 
 # Parse owner/repo from SSH or HTTPS remote URL
+# Uses python3 to avoid BSD sed non-greedy quantifier incompatibility
 parse_remote() {
-  echo "$REMOTE_URL" \
-    | sed -E 's|.*[:/]([^/]+/[^/]+?)(\.git)?$|\1|'
+  python3 -c "
+import sys, re
+m = re.search(r'[:/]([^/]+/[^/]+?)(?:\.git)?$', sys.argv[1])
+print(m.group(1) if m else '')
+" "$REMOTE_URL"
 }
 
 PLATFORM=$(detect_platform)
@@ -456,8 +460,16 @@ create_gitlab_mr() {
       "$OWNER_REPO")
 
     # Resolve project ID (works for gitlab.com and self-hosted)
-    local host; host=$(echo "$REMOTE_URL" | sed -E 's|.*@||;s|:.*||;s|/.*||')
-    [[ "$REMOTE_URL" == https* ]] && host=$(echo "$REMOTE_URL" | sed -E 's|https?://||;s|/.*||')
+    local host
+    host=$(python3 -c "
+import sys, re
+url = sys.argv[1]
+if url.startswith('http'):
+    m = re.match(r'https?://([^/]+)', url)
+else:
+    m = re.match(r'.*@([^:]+):', url)
+print(m.group(1) if m else '')
+" "$REMOTE_URL")
 
     local project_id
     project_id=$(curl -sf \
