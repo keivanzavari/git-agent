@@ -103,7 +103,7 @@ The platform is auto-detected from `git remote get-url origin`.
 
 Jira ID is extracted with the regex `[A-Z]+-[0-9]+` from the branch name:
 
-```
+```text
 feature/AUTH-42/google-sso   →   [AUTH-42] ...
 fix/PLAT-7-null-pointer      →   [PLAT-7] ...
 main                         →   (no prefix)

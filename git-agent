@@ -7,6 +7,14 @@
 # Docs:   https://github.com/keivanzavari/git-agent
 set -euo pipefail
 
+# Bash 4+ required for ${var,,} lowercase expansion and associative arrays.
+# macOS ships with Bash 3.2; install a newer version via: brew install bash
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "git-agent requires Bash 4+. Detected: ${BASH_VERSION}" >&2
+  echo "Install a newer Bash: brew install bash" >&2
+  exit 1
+fi
+
 VERSION="0.2.0"
 
 # ── colours ──────────────────────────────────────────────────────────────────
@@ -73,11 +81,17 @@ POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    -m|--message) OPT_MESSAGE="$2"; shift 2 ;;
-    --title)      OPT_TITLE="$2";   shift 2 ;;
+    -m|--message)
+      [[ $# -ge 2 && "${2:-}" != -* ]] || die "$1 requires a value (e.g. $1 'My message')."
+      OPT_MESSAGE="$2"; shift 2 ;;
+    --title)
+      [[ $# -ge 2 && "${2:-}" != -* ]] || die "$1 requires a value (e.g. $1 'My PR title')."
+      OPT_TITLE="$2"; shift 2 ;;
     --pr)         OPT_PR=true;      shift ;;
     --draft)      OPT_DRAFT=true; OPT_PR=true; shift ;;
-    --base)       OPT_BASE="$2";    shift 2 ;;
+    --base)
+      [[ $# -ge 2 && "${2:-}" != -* ]] || die "$1 requires a value (e.g. $1 main)."
+      OPT_BASE="$2"; shift 2 ;;
     --no-push)    OPT_NO_PUSH=true; shift ;;
     -y|--yes)     OPT_YES=true;     shift ;;
     -v|--version) echo "git-agent $VERSION"; exit 0 ;;
@@ -228,8 +242,12 @@ EOF
     local tmp; tmp=$(mktemp /tmp/git-agent-msg.XXXXXX)
     printf '%s\n' "$template" > "$tmp"
     "${VISUAL:-$EDITOR}" "$tmp"
-    grep -v '^#' "$tmp" | sed '/^[[:space:]]*$/d'
+    local edited; edited=$(grep -v '^#' "$tmp" | sed '/^[[:space:]]*$/d' || true)
     rm -f "$tmp"
+    if [[ -z "$edited" ]]; then
+      die "Empty commit message after editing. Aborted."
+    fi
+    echo "$edited"
   else
     warn "No LLM API key and no \$EDITOR set. Enter commit message (Ctrl-D to finish):"
     cat
@@ -308,12 +326,20 @@ detect_platform() {
   esac
 }
 
-# Parse owner/repo from SSH or HTTPS remote URL
-# Uses python3 to avoid BSD sed non-greedy quantifier incompatibility
+# Parse full repo path from SSH, SCP-like, or HTTPS remote URL.
+# Returns the complete path so GitLab sub-groups (org/team/repo) are preserved.
+# Uses python3 to avoid BSD sed incompatibilities.
 parse_remote() {
   python3 -c "
 import sys, re
-m = re.search(r'[:/]([^/]+/[^/]+?)(?:\.git)?$', sys.argv[1])
+url = sys.argv[1]
+if url.startswith('ssh://'):
+    m = re.match(r'ssh://[^@]*@?[^/]+/(.+?)(?:\.git)?\$', url)
+elif url.startswith(('http://', 'https://')):
+    m = re.match(r'https?://[^/]+/(.+?)(?:\.git)?\$', url)
+else:
+    # SCP-like: git@host:path/to/repo.git
+    m = re.match(r'[^@]*@[^:]+:(.+?)(?:\.git)?\$', url)
 print(m.group(1) if m else '')
 " "$REMOTE_URL"
 }
@@ -321,7 +347,7 @@ print(m.group(1) if m else '')
 PLATFORM=$(detect_platform)
 OWNER_REPO=$(parse_remote)
 OWNER=$(echo "$OWNER_REPO" | cut -d/ -f1)
-REPO=$(echo "$OWNER_REPO"  | cut -d/ -f2)
+REPO=$(echo "$OWNER_REPO"  | rev | cut -d/ -f1 | rev)   # last segment (handles GitLab sub-groups)
 info "Platform: $PLATFORM ($OWNER_REPO)"
 
 # ── detect base branch ────────────────────────────────────────────────────────
@@ -481,10 +507,14 @@ print(m.group(1) if m else '')
     local payload
     payload=$(python3 -c "
 import json, sys
+title = sys.argv[3]
+# GitLab draft MRs are signalled by a 'Draft:' prefix in the title
+if sys.argv[5] == 'true':
+    title = 'Draft: ' + title
 print(json.dumps({
   'source_branch': sys.argv[1], 'target_branch': sys.argv[2],
-  'title': sys.argv[3], 'description': sys.argv[4],
-}))" "$BRANCH" "$OPT_BASE" "$PR_TITLE" "$PR_BODY")
+  'title': title, 'description': sys.argv[4],
+}))" "$BRANCH" "$OPT_BASE" "$PR_TITLE" "$PR_BODY" "$OPT_DRAFT")
 
     local resp
     resp=$(curl -sf -X POST \
