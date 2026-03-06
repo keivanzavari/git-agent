@@ -116,7 +116,7 @@ main                         →   (no prefix)
 
 Any agent with `Bash` tool access can call `git-agent` directly:
 
-```
+```bash
 # The agent generates the message, the script handles the mechanics
 git-agent --message "<agent-generated message>" --pr --yes "<extra context>"
 ```
