@@ -47,7 +47,7 @@ OPTIONS
 
 CONTEXT
   Any positional arguments are passed as context to the LLM when generating
-  the commit message (e.g. Jira ticket summary, design decisions, tradeoffs).
+  the commit message (e.g. ticket summary, design decisions, tradeoffs).
 
 ENVIRONMENT
   ANTHROPIC_API_KEY   Use Claude to generate commit message and PR body
@@ -56,9 +56,20 @@ ENVIRONMENT
   GITLAB_TOKEN        GitLab token (fallback when glab CLI is not installed)
   BITBUCKET_USER      Bitbucket username  (required for Bitbucket)
   BITBUCKET_TOKEN     Bitbucket app password (required for Bitbucket)
-  JIRA_BASE_URL       Jira instance base URL (e.g. https://yourorg.atlassian.net)
-                      When set, PR bodies include a clickable Jira link.
-                      When unset, only the bare issue ID is included.
+  TICKET_PATTERN      Regex to extract the ticket/issue ID from the branch name.
+                      Default: [A-Z]+-[0-9]+ (matches Jira, Linear, YouTrack, etc.)
+                      Override for other systems, e.g.:
+                        [0-9]+        GitHub / GitLab issue numbers
+                        sc-[0-9]+     Shortcut
+                        AB#[0-9]+     Azure DevOps
+  TICKET_URL_TEMPLATE URL template for linking to a ticket in PR bodies.
+                      Use {id} as the placeholder for the extracted ticket ID.
+                      Example: https://yourorg.atlassian.net/browse/{id}  (Jira)
+                               https://linear.app/myteam/issue/{id}       (Linear)
+                               https://github.com/org/repo/issues/{id}    (GitHub)
+                      When unset, the bare ticket ID is included as plain text.
+  JIRA_BASE_URL       Deprecated. Equivalent to setting
+                      TICKET_URL_TEMPLATE=\$JIRA_BASE_URL/browse/{id}.
 
 EXAMPLES
   # Standalone — LLM generates the commit message
@@ -133,9 +144,14 @@ DIFF_STAT=$(git diff --cached --stat)
 DIFF=$(git diff --cached)
 LOG=$(git log --oneline -5 2>/dev/null || true)
 
-# ── extract Jira ID ───────────────────────────────────────────────────────────
-JIRA_ID=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)
-[[ -n "$JIRA_ID" ]] && info "Jira ID: $JIRA_ID"
+# ── extract ticket ID ─────────────────────────────────────────────────────────
+# Backward compat: JIRA_BASE_URL → TICKET_URL_TEMPLATE with Jira's /browse/ path
+if [[ -z "${TICKET_URL_TEMPLATE:-}" && -n "${JIRA_BASE_URL:-}" ]]; then
+  TICKET_URL_TEMPLATE="${JIRA_BASE_URL}/browse/{id}"
+fi
+_TICKET_PATTERN="${TICKET_PATTERN:-[A-Z]+-[0-9]+}"
+TICKET_ID=$(echo "$BRANCH" | grep -oE "$_TICKET_PATTERN" | head -1 || true)
+[[ -n "$TICKET_ID" ]] && info "Ticket ID: $TICKET_ID"
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
 # Escape a string to a JSON value (including the surrounding quotes).
@@ -192,6 +208,25 @@ call_llm() {
   fi
 }
 
+# ── ticket URL helper ─────────────────────────────────────────────────────────
+# Returns a Markdown link if TICKET_URL_TEMPLATE is set, otherwise the bare ID.
+# The ID is percent-encoded before URL substitution so IDs with reserved chars
+# (e.g. Azure DevOps "AB#123") produce valid URLs while the display text stays
+# readable.
+ticket_url() {
+  local id="$1"
+  if [[ -n "${TICKET_URL_TEMPLATE:-}" ]]; then
+    local encoded_id
+    encoded_id=$(python3 -c \
+      "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" \
+      "$id")
+    local url="${TICKET_URL_TEMPLATE/\{id\}/$encoded_id}"
+    echo "[$id]($url)"
+  else
+    echo "$id"
+  fi
+}
+
 # ── commit message generation ─────────────────────────────────────────────────
 commit_prompt() {
   cat <<PROMPT
@@ -205,12 +240,12 @@ Format:
   (maximum 3 bullets; omit body entirely if title is self-explanatory)
 
 Rules:
-  - Prefix title with Jira ID if present: "[JIRA-123] Title"
+  - Prefix title with ticket ID if present: "[PROJ-123] Title"
   - Imperative mood: "Add", "Fix", "Refactor" — never "Added" or "Adding"
   - Do NOT list file names or line counts — git show handles that
   - Match style of recent commit history if a pattern is evident
 
-Jira ID: ${JIRA_ID:-none}
+Ticket ID: ${TICKET_ID:-none}
 Context from caller: ${OPT_CONTEXT:-none}
 Branch: $BRANCH
 Recent history:
@@ -231,7 +266,7 @@ generate_commit_msg() {
     return
   fi
   # No LLM available — open $EDITOR or read from stdin
-  local prefix="${JIRA_ID:+[$JIRA_ID] }"
+  local prefix="${TICKET_ID:+[$TICKET_ID] }"
   local template
   template="$(cat <<EOF
 ${prefix}Short summary in imperative mood
@@ -380,8 +415,8 @@ Key implementation details or non-obvious decisions
 ## Testing
 How to verify this works; what a reviewer should check
 
-${JIRA_ID:+## Jira
-${JIRA_BASE_URL:+[$JIRA_ID]($JIRA_BASE_URL/browse/$JIRA_ID)}${JIRA_BASE_URL:-$JIRA_ID}}
+${TICKET_ID:+## Ticket
+$(ticket_url "$TICKET_ID")}
 
 Commit message:
 $COMMIT_MSG
@@ -421,10 +456,10 @@ ${OPT_CONTEXT:+
 ## Context
 
 $OPT_CONTEXT}
-${JIRA_ID:+
-## Jira
+${TICKET_ID:+
+## Ticket
 
-${JIRA_BASE_URL:+[$JIRA_ID]($JIRA_BASE_URL/browse/$JIRA_ID)}${JIRA_BASE_URL:-$JIRA_ID}}
+$(ticket_url "$TICKET_ID")}
 EOF
 }
 
