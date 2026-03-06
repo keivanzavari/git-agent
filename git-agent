@@ -210,10 +210,17 @@ call_llm() {
 
 # ── ticket URL helper ─────────────────────────────────────────────────────────
 # Returns a Markdown link if TICKET_URL_TEMPLATE is set, otherwise the bare ID.
+# The ID is percent-encoded before URL substitution so IDs with reserved chars
+# (e.g. Azure DevOps "AB#123") produce valid URLs while the display text stays
+# readable.
 ticket_url() {
   local id="$1"
   if [[ -n "${TICKET_URL_TEMPLATE:-}" ]]; then
-    local url="${TICKET_URL_TEMPLATE/\{id\}/$id}"
+    local encoded_id
+    encoded_id=$(python3 -c \
+      "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" \
+      "$id")
+    local url="${TICKET_URL_TEMPLATE/\{id\}/$encoded_id}"
     echo "[$id]($url)"
   else
     echo "$id"
