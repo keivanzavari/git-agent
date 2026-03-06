@@ -56,6 +56,9 @@ ENVIRONMENT
   GITLAB_TOKEN        GitLab token (fallback when glab CLI is not installed)
   BITBUCKET_USER      Bitbucket username  (required for Bitbucket)
   BITBUCKET_TOKEN     Bitbucket app password (required for Bitbucket)
+  JIRA_BASE_URL       Jira instance base URL (e.g. https://yourorg.atlassian.net)
+                      When set, PR bodies include a clickable Jira link.
+                      When unset, only the bare issue ID is included.
 
 EXAMPLES
   # Standalone — LLM generates the commit message
@@ -378,7 +381,7 @@ Key implementation details or non-obvious decisions
 How to verify this works; what a reviewer should check
 
 ${JIRA_ID:+## Jira
-[$JIRA_ID](https://your-org.atlassian.net/browse/$JIRA_ID)}
+${JIRA_BASE_URL:+[$JIRA_ID]($JIRA_BASE_URL/browse/$JIRA_ID)}${JIRA_BASE_URL:-$JIRA_ID}}
 
 Commit message:
 $COMMIT_MSG
@@ -421,7 +424,7 @@ $OPT_CONTEXT}
 ${JIRA_ID:+
 ## Jira
 
-[$JIRA_ID](https://your-org.atlassian.net/browse/$JIRA_ID)}
+${JIRA_BASE_URL:+[$JIRA_ID]($JIRA_BASE_URL/browse/$JIRA_ID)}${JIRA_BASE_URL:-$JIRA_ID}}
 EOF
 }
 

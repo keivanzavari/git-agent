@@ -49,7 +49,7 @@ Parse the branch name for `[A-Z]+-[0-9]+`. Carry it forward into the message.
 ## Step 4 — Write the commit message
 
 Format:
-```
+```text
 [JIRA-123] Short imperative summary (≤72 chars)
 
 - Bullet: WHY or what changed — not a file list

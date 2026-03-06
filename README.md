@@ -85,6 +85,9 @@ export GITLAB_TOKEN=glpat-...
 # Bitbucket (no official CLI — always required)
 export BITBUCKET_USER=your-username
 export BITBUCKET_TOKEN=your-app-password
+
+# Optional: enables clickable Jira links in PR bodies
+export JIRA_BASE_URL=https://yourorg.atlassian.net
 ```
 
 If no API key is set, the script falls back to your `$EDITOR` for message input.
