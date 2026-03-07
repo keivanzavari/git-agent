@@ -84,17 +84,22 @@ git-agent --no-push
 
 Set environment variables in your shell profile (`~/.zshrc`, `~/.bashrc`).
 
-### LLM keys — CLI mode only
+### LLM keys
 
-These power the built-in commit message generator when running `git-agent` standalone.
-In MCP mode the host agent (Copilot, Claude Desktop) **is** the LLM — no key required.
+These power the built-in commit message generator used by the standalone CLI and the
+`generate_commit_message` MCP tool.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # Claude (preferred)
 export OPENAI_API_KEY=sk-...          # GPT-4o
 ```
 
-If neither key is set, the CLI falls back to `$EDITOR` for message input.
+In **typical MCP usage** (Copilot, Claude Desktop), the host agent generates the commit
+message and calls `commit` directly — so these keys are **not required** for that workflow.
+They are only needed when running `git-agent` standalone or when explicitly invoking
+the `generate_commit_message` MCP tool.
+
+If neither key is set, the standalone CLI falls back to `$EDITOR` for message input.
 
 ### Platform tokens
 
