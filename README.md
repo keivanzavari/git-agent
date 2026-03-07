@@ -101,23 +101,6 @@ the `generate_commit_message` MCP tool.
 
 If neither key is set, the standalone CLI falls back to `$EDITOR` for message input.
 
-### Platform tokens
-
-Required when the corresponding CLI tool (`gh`, `glab`) is not installed, and also used
-by the MCP `create_pr` tool when those CLIs are absent.
-
-```bash
-# GitHub (only needed if gh CLI is not installed)
-export GITHUB_TOKEN=ghp_...
-
-# GitLab (only needed if glab CLI is not installed)
-export GITLAB_TOKEN=glpat-...
-
-# Bitbucket (no official CLI — always required)
-export BITBUCKET_USER=your-username
-export BITBUCKET_TOKEN=your-app-password
-```
-
 ### Ticket configuration
 
 ```bash
@@ -134,13 +117,15 @@ export TICKET_URL_TEMPLATE=https://yourorg.atlassian.net/browse/{id}  # Jira
 
 ## Platform support
 
-| Platform | CLI (preferred) | API fallback |
+| Platform | CLI (required for PRs) | Install |
 |---|---|---|
-| GitHub | `gh` | `GITHUB_TOKEN` + curl |
-| GitLab | `glab` | `GITLAB_TOKEN` + curl |
-| Bitbucket | — | `BITBUCKET_USER` + `BITBUCKET_TOKEN` + curl |
+| GitHub | `gh` | https://cli.github.com |
+| GitLab | `glab` | https://gitlab.com/gitlab-org/cli |
+| Bitbucket | `bkt` | `brew install avivsinai/tap/bitbucket-cli` |
 
-The platform is auto-detected from `git remote get-url origin`.
+The platform is auto-detected from `git remote get-url origin`. Each CLI handles its
+own authentication — run `gh auth login`, `glab auth login`, or `bkt auth login` once
+to set up credentials. Commits and pushes work without any CLI installed.
 
 ## Ticket ID extraction
 
@@ -214,8 +199,9 @@ Requires `pytest` — see `requirements-dev.txt`.
 
 - Python 3.9+
 - `git`
-- `gh` CLI (optional, preferred for GitHub PRs)
-- `glab` CLI (optional, preferred for GitLab MRs)
+- `gh` CLI (optional — required only for GitHub PR creation)
+- `glab` CLI (optional — required only for GitLab MR creation)
+- `bkt` CLI (optional — required only for Bitbucket PR creation)
 
 `git_agent.py` is stdlib-only (no pip install needed for the CLI).
 The MCP server (`git_agent_mcp.py`) additionally requires `mcp>=1.2.0` — see `requirements.txt`.

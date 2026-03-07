@@ -116,18 +116,15 @@ def create_pr(
     """
     rem_url = ga.remote_url()
     platform = ga.detect_platform(rem_url)
-    owner_repo = ga.parse_remote_path(rem_url)
-    owner = owner_repo.split("/")[0]
-    repo = owner_repo.split("/")[-1]
     branch = ga.current_branch()
     resolved_base = base or ga.default_base_branch()
 
     if platform == "github":
-        return ga.create_github_pr(title, body, branch, resolved_base, draft, owner, repo)
+        return ga.create_github_pr(title, body, branch, resolved_base, draft)
     elif platform == "gitlab":
-        return ga.create_gitlab_mr(title, body, branch, resolved_base, draft, owner_repo, rem_url)
+        return ga.create_gitlab_mr(title, body, branch, resolved_base, draft)
     elif platform == "bitbucket":
-        return ga.create_bitbucket_pr(title, body, branch, resolved_base, owner, repo)
+        return ga.create_bitbucket_pr(title, body, branch, resolved_base, draft)
     else:
         raise ValueError(
             f"Unsupported platform for remote URL: {rem_url!r}. "

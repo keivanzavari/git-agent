@@ -85,10 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
 ENVIRONMENT
   ANTHROPIC_API_KEY   Use Claude to generate commit message and PR body
   OPENAI_API_KEY      Use GPT-4o to generate commit message and PR body
-  GITHUB_TOKEN        GitHub token (fallback when gh CLI is not installed)
-  GITLAB_TOKEN        GitLab token (fallback when glab CLI is not installed)
-  BITBUCKET_USER      Bitbucket username (required for Bitbucket)
-  BITBUCKET_TOKEN     Bitbucket app password (required for Bitbucket)
   TICKET_PATTERN      Regex to extract the ticket/issue ID from the branch name.
                       Default: [A-Z]+-[0-9]+ (matches Jira, Linear, YouTrack, etc.)
                       Override for other systems, e.g.:
@@ -427,139 +423,39 @@ def parse_remote_path(url: str) -> str:
     return ""
 
 
-def parse_host(url: str) -> str:
-    """Extract hostname from any remote URL form."""
-    for pattern in [
-        r"https?://([^/]+)",
-        r"ssh://[^@]*@?([^/]+)",
-        r"[^@]*@([^:]+):",
-    ]:
-        m = re.search(pattern, url)
-        if m:
-            return m.group(1)
-    return ""
-
-
 def create_github_pr(pr_title: str, pr_body: str, branch: str,
-                     base: str, draft: bool,
-                     owner: str, repo: str) -> str:
-    if _cmd_exists("gh"):
-        args = ["gh", "pr", "create",
-                "--title", pr_title, "--body", pr_body, "--base", base]
-        if draft:
-            args.append("--draft")
-        result = run(args, capture=True)
-        return result.stdout.strip()
-
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        die("Set GITHUB_TOKEN or install the gh CLI to create GitHub PRs.")
-    payload = {
-        "title": pr_title, "body": pr_body,
-        "head": branch, "base": base, "draft": draft,
-    }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "content-type": "application/json",
-    }
-    resp = _http_post(
-        f"https://api.github.com/repos/{owner}/{repo}/pulls",
-        payload, headers,
-    )
-    return resp["html_url"]
+                     base: str, draft: bool) -> str:
+    if not _cmd_exists("gh"):
+        die("Install the gh CLI to create GitHub PRs: https://cli.github.com")
+    args = ["gh", "pr", "create",
+            "--title", pr_title, "--body", pr_body, "--base", base]
+    if draft:
+        args.append("--draft")
+    return run(args, capture=True).stdout.strip()
 
 
 def create_gitlab_mr(pr_title: str, pr_body: str, branch: str,
-                     base: str, draft: bool,
-                     owner_repo: str, remote_url_str: str) -> str:
-    if _cmd_exists("glab"):
-        args = ["glab", "mr", "create",
-                "--title", pr_title, "--description", pr_body,
-                "--target-branch", base, "--source-branch", branch]
-        if draft:
-            args.append("--draft")
-        result = run(args, capture=True)
-        return result.stdout.strip()
-
-    token = os.environ.get("GITLAB_TOKEN")
-    if not token:
-        die("Set GITLAB_TOKEN or install the glab CLI to create GitLab MRs.")
-
-    host = parse_host(remote_url_str)
-    encoded_path = urllib.parse.quote(owner_repo, safe="")
-    project_resp = _api_get(
-        f"https://{host}/api/v4/projects/{encoded_path}",
-        headers={"PRIVATE-TOKEN": token},
-    )
-    project_id = project_resp["id"]
-
-    title = ("Draft: " + pr_title) if draft else pr_title
-    payload = {
-        "source_branch": branch, "target_branch": base,
-        "title": title, "description": pr_body,
-    }
-    resp = _http_post(
-        f"https://{host}/api/v4/projects/{project_id}/merge_requests",
-        payload,
-        {"PRIVATE-TOKEN": token, "content-type": "application/json"},
-    )
-    return resp["web_url"]
+                     base: str, draft: bool) -> str:
+    if not _cmd_exists("glab"):
+        die("Install the glab CLI to create GitLab MRs: https://gitlab.com/gitlab-org/cli")
+    args = ["glab", "mr", "create",
+            "--title", pr_title, "--description", pr_body,
+            "--target-branch", base, "--source-branch", branch]
+    if draft:
+        args.append("--draft")
+    return run(args, capture=True).stdout.strip()
 
 
 def create_bitbucket_pr(pr_title: str, pr_body: str, branch: str,
-                        base: str, owner: str, repo: str) -> str:
-    user = os.environ.get("BITBUCKET_USER")
-    token = os.environ.get("BITBUCKET_TOKEN")
-    if not user:
-        die("Set BITBUCKET_USER for Bitbucket PRs.")
-    if not token:
-        die("Set BITBUCKET_TOKEN for Bitbucket PRs.")
-
-    payload = {
-        "title": pr_title, "description": pr_body,
-        "source": {"branch": {"name": branch}},
-        "destination": {"branch": {"name": base}},
-        "close_source_branch": False,
-    }
-    data = json.dumps(payload).encode()
-    creds = urllib.parse.quote(user) + ":" + urllib.parse.quote(token)
-    req = urllib.request.Request(
-        f"https://api.bitbucket.org/2.0/repositories/{owner}/{repo}/pullrequests",
-        data=data,
-        headers={
-            "Authorization": "Basic " + __import__("base64").b64encode(
-                f"{user}:{token}".encode()
-            ).decode(),
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            return json.load(resp)["links"]["html"]["href"]
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        die(f"Bitbucket API call failed (HTTP {exc.code}):\n{body}")
-    except urllib.error.URLError as exc:
-        die(f"Request to Bitbucket API failed: {exc.reason}")
-    except json.JSONDecodeError as exc:
-        die(f"Invalid JSON from Bitbucket API: {exc}")
-
-
-def _api_get(url: str, headers: dict) -> dict:
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        die(f"HTTP {exc.code} from {url}:\n{body}")
-    except urllib.error.URLError as exc:
-        die(f"Request to {url} failed: {exc.reason}")
-    except json.JSONDecodeError as exc:
-        die(f"Invalid JSON from {url}: {exc}")
+                        base: str, draft: bool) -> str:
+    if not _cmd_exists("bkt"):
+        die("Install the bkt CLI to create Bitbucket PRs: "
+            "brew install avivsinai/tap/bitbucket-cli")
+    if draft:
+        warn("bkt does not support draft PRs; creating a regular PR.")
+    args = ["bkt", "pr", "create",
+            "--title", pr_title, "--source", branch, "--target", base]
+    return run(args, capture=True).stdout.strip()
 
 
 def _cmd_exists(name: str) -> bool:
@@ -685,8 +581,6 @@ def main() -> None:
     rem_url = remote_url()
     platform = detect_platform(rem_url)
     owner_repo = parse_remote_path(rem_url)
-    owner = owner_repo.split("/")[0]
-    repo = owner_repo.split("/")[-1]
     info(f"Platform: {platform} ({owner_repo})")
 
     # ── detect base branch ─────────────────────────────────────────────────────
@@ -715,11 +609,11 @@ def main() -> None:
 
     # ── create PR ──────────────────────────────────────────────────────────────
     if platform == "github":
-        pr_url = create_github_pr(pr_title, pr_body, branch, base, args.draft, owner, repo)
+        pr_url = create_github_pr(pr_title, pr_body, branch, base, args.draft)
     elif platform == "gitlab":
-        pr_url = create_gitlab_mr(pr_title, pr_body, branch, base, args.draft, owner_repo, rem_url)
+        pr_url = create_gitlab_mr(pr_title, pr_body, branch, base, args.draft)
     elif platform == "bitbucket":
-        pr_url = create_bitbucket_pr(pr_title, pr_body, branch, base, owner, repo)
+        pr_url = create_bitbucket_pr(pr_title, pr_body, branch, base, args.draft)
     else:
         warn(f"Unrecognised platform. Remote: {rem_url}")
         warn("Supported: github.com, gitlab.com, bitbucket.org")

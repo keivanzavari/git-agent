@@ -151,20 +151,6 @@ class TestParseRemotePath:
 
 
 # ===========================================================================
-# parse_host
-# ===========================================================================
-class TestParseHost:
-    @pytest.mark.parametrize("url,expected", [
-        ("https://github.com/org/repo.git", "github.com"),
-        ("https://gitlab.mycompany.com/org/repo.git", "gitlab.mycompany.com"),
-        ("git@gitlab.com:org/repo.git", "gitlab.com"),
-        ("ssh://git@gitlab.com/org/repo.git", "gitlab.com"),
-    ])
-    def test_hosts(self, url, expected):
-        assert ga.parse_host(url) == expected
-
-
-# ===========================================================================
 # LLM helpers
 # ===========================================================================
 class TestCallLlm:
@@ -237,146 +223,93 @@ class TestPromptGeneration:
 # create_github_pr
 # ===========================================================================
 class TestCreateGithubPr:
-    def test_uses_gh_cli_when_available(self):
+    def test_uses_gh_cli(self):
         with patch.object(ga, "_cmd_exists", return_value=True), \
              patch.object(ga, "run") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="https://github.com/org/repo/pull/1\n")
-            url = ga.create_github_pr("Title", "Body", "feature/x", "main",
-                                      False, "org", "repo")
+            url = ga.create_github_pr("Title", "Body", "feature/x", "main", False)
         assert url == "https://github.com/org/repo/pull/1"
         cmd = mock_run.call_args[0][0]
-        assert "gh" in cmd
+        assert cmd[0] == "gh"
         assert "--draft" not in cmd
 
     def test_gh_cli_adds_draft_flag(self):
         with patch.object(ga, "_cmd_exists", return_value=True), \
              patch.object(ga, "run") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="https://github.com/org/repo/pull/2\n")
-            ga.create_github_pr("Title", "Body", "feature/x", "main",
-                                 True, "org", "repo")
+            ga.create_github_pr("Title", "Body", "feature/x", "main", True)
         cmd = mock_run.call_args[0][0]
         assert "--draft" in cmd
 
-    def test_falls_back_to_api_without_gh(self, monkeypatch):
-        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
-        fake_resp = {"html_url": "https://github.com/org/repo/pull/3"}
-        with patch.object(ga, "_cmd_exists", return_value=False), \
-             patch.object(ga, "_http_post", return_value=fake_resp) as mock_post:
-            url = ga.create_github_pr("Title", "Body", "feature/x", "main",
-                                      False, "org", "repo")
-        assert url == "https://github.com/org/repo/pull/3"
-        call_url = mock_post.call_args[0][0]
-        assert "api.github.com" in call_url
-        assert "org/repo" in call_url
-
-    def test_dies_without_gh_and_no_token(self, monkeypatch):
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    def test_dies_without_gh(self):
         with patch.object(ga, "_cmd_exists", return_value=False), \
              pytest.raises(SystemExit):
-            ga.create_github_pr("T", "B", "feat/x", "main", False, "o", "r")
+            ga.create_github_pr("T", "B", "feat/x", "main", False)
 
 
 # ===========================================================================
 # create_gitlab_mr
 # ===========================================================================
 class TestCreateGitlabMr:
-    def test_uses_glab_cli_when_available(self):
+    def test_uses_glab_cli(self):
         with patch.object(ga, "_cmd_exists", return_value=True), \
              patch.object(ga, "run") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="https://gitlab.com/org/repo/-/merge_requests/1\n")
-            url = ga.create_gitlab_mr("Title", "Body", "feature/x", "main",
-                                      False, "org/repo", "git@gitlab.com:org/repo.git")
+            url = ga.create_gitlab_mr("Title", "Body", "feature/x", "main", False)
         assert "merge_requests" in url
 
-    def test_draft_mr_via_glab_adds_flag(self):
+    def test_draft_mr_adds_flag(self):
         with patch.object(ga, "_cmd_exists", return_value=True), \
              patch.object(ga, "run") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="https://gitlab.com/org/repo/-/merge_requests/2\n")
-            ga.create_gitlab_mr("Title", "Body", "feature/x", "main",
-                                 True, "org/repo", "git@gitlab.com:org/repo.git")
+            ga.create_gitlab_mr("Title", "Body", "feature/x", "main", True)
         cmd = mock_run.call_args[0][0]
         assert "--draft" in cmd
 
-    def test_draft_mr_via_api_prefixes_title(self, monkeypatch):
-        monkeypatch.setenv("GITLAB_TOKEN", "glpat-test")
-        project_resp = {"id": 42}
-        mr_resp = {"web_url": "https://gitlab.com/org/repo/-/merge_requests/3"}
+    def test_dies_without_glab(self):
         with patch.object(ga, "_cmd_exists", return_value=False), \
-             patch.object(ga, "_api_get", return_value=project_resp), \
-             patch.object(ga, "_http_post", return_value=mr_resp) as mock_post:
-            ga.create_gitlab_mr("My Title", "Body", "feature/x", "main",
-                                  True, "org/repo", "https://gitlab.com/org/repo.git")
-        payload = mock_post.call_args[0][1]
-        assert payload["title"] == "Draft: My Title"
-
-    def test_non_draft_mr_via_api_no_prefix(self, monkeypatch):
-        monkeypatch.setenv("GITLAB_TOKEN", "glpat-test")
-        project_resp = {"id": 42}
-        mr_resp = {"web_url": "https://gitlab.com/org/repo/-/merge_requests/4"}
-        with patch.object(ga, "_cmd_exists", return_value=False), \
-             patch.object(ga, "_api_get", return_value=project_resp), \
-             patch.object(ga, "_http_post", return_value=mr_resp) as mock_post:
-            ga.create_gitlab_mr("My Title", "Body", "feature/x", "main",
-                                  False, "org/repo", "https://gitlab.com/org/repo.git")
-        payload = mock_post.call_args[0][1]
-        assert payload["title"] == "My Title"
+             pytest.raises(SystemExit):
+            ga.create_gitlab_mr("T", "B", "feat/x", "main", False)
 
 
 # ===========================================================================
 # create_bitbucket_pr
 # ===========================================================================
 class TestCreateBitbucketPr:
-    def test_creates_pr_with_correct_payload(self, monkeypatch):
-        monkeypatch.setenv("BITBUCKET_USER", "user")
-        monkeypatch.setenv("BITBUCKET_TOKEN", "token")
-        import urllib.request as urlreq
-        fake_resp = {"links": {"html": {"href": "https://bitbucket.org/org/repo/pull-requests/1"}}}
-
-        class FakeCtx:
-            def __enter__(self):
-                import io
-                resp = MagicMock()
-                resp.read.return_value = json.dumps(fake_resp).encode()
-                resp.__enter__ = lambda s: s
-                resp.__exit__ = MagicMock(return_value=False)
-
-                class CM:
-                    def __enter__(self_):
-                        import io
-                        m = MagicMock()
-                        m.__iter__ = lambda s: iter([])
-                        import json as _json
-                        m.read.return_value = json.dumps(fake_resp).encode()
-                        return m
-                    def __exit__(self_, *a): pass
-                return CM().__enter__()
-            def __exit__(self, *a): pass
-
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_ctx = MagicMock()
-            mock_ctx.__enter__ = MagicMock(
-                return_value=MagicMock(**{"read.return_value": json.dumps(fake_resp).encode()})
-            )
-            mock_ctx.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_ctx
-            # Patch json.load to return our fake response
-            with patch("json.load", return_value=fake_resp):
-                url = ga.create_bitbucket_pr(
-                    "Title", "Body", "feature/x", "main", "org", "repo"
-                )
+    def test_uses_bkt_cli(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="https://bitbucket.org/org/repo/pull-requests/1\n")
+            url = ga.create_bitbucket_pr("Title", "Body", "feature/x", "main", False)
         assert url == "https://bitbucket.org/org/repo/pull-requests/1"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "bkt"
+        assert "--source" in cmd
+        assert "--target" in cmd
 
-    def test_dies_without_user(self, monkeypatch):
-        monkeypatch.delenv("BITBUCKET_USER", raising=False)
-        monkeypatch.setenv("BITBUCKET_TOKEN", "token")
-        with pytest.raises(SystemExit):
-            ga.create_bitbucket_pr("T", "B", "feat/x", "main", "o", "r")
+    def test_bkt_cmd_structure(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.create_bitbucket_pr("My PR", "Body", "feature/x", "main", False)
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["bkt", "pr", "create",
+                       "--title", "My PR", "--source", "feature/x", "--target", "main"]
 
-    def test_dies_without_token(self, monkeypatch):
-        monkeypatch.setenv("BITBUCKET_USER", "user")
-        monkeypatch.delenv("BITBUCKET_TOKEN", raising=False)
-        with pytest.raises(SystemExit):
-            ga.create_bitbucket_pr("T", "B", "feat/x", "main", "o", "r")
+    def test_draft_warns_and_creates_anyway(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run, \
+             patch.object(ga, "warn") as mock_warn:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.create_bitbucket_pr("Title", "Body", "feature/x", "main", True)
+        mock_warn.assert_called_once()
+        assert "draft" in mock_warn.call_args[0][0].lower()
+        mock_run.assert_called_once()
+
+    def test_dies_without_bkt(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             pytest.raises(SystemExit):
+            ga.create_bitbucket_pr("T", "B", "feat/x", "main", False)
 
 
 # ===========================================================================
