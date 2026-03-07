@@ -82,13 +82,26 @@ git-agent --no-push
 
 ## Configuration
 
-Set environment variables in your shell profile (`~/.zshrc`, `~/.bashrc`):
+Set environment variables in your shell profile (`~/.zshrc`, `~/.bashrc`).
+
+### LLM keys — CLI mode only
+
+These power the built-in commit message generator when running `git-agent` standalone.
+In MCP mode the host agent (Copilot, Claude Desktop) **is** the LLM — no key required.
 
 ```bash
-# LLM for commit message generation (pick one)
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...   # Claude (preferred)
+export OPENAI_API_KEY=sk-...          # GPT-4o
+```
 
+If neither key is set, the CLI falls back to `$EDITOR` for message input.
+
+### Platform tokens
+
+Required when the corresponding CLI tool (`gh`, `glab`) is not installed, and also used
+by the MCP `create_pr` tool when those CLIs are absent.
+
+```bash
 # GitHub (only needed if gh CLI is not installed)
 export GITHUB_TOKEN=ghp_...
 
@@ -98,7 +111,11 @@ export GITLAB_TOKEN=glpat-...
 # Bitbucket (no official CLI — always required)
 export BITBUCKET_USER=your-username
 export BITBUCKET_TOKEN=your-app-password
+```
 
+### Ticket configuration
+
+```bash
 # Optional: clickable ticket links in PR bodies — use {id} as the placeholder
 export TICKET_URL_TEMPLATE=https://yourorg.atlassian.net/browse/{id}  # Jira
 # export TICKET_URL_TEMPLATE=https://linear.app/myteam/issue/{id}     # Linear
@@ -109,8 +126,6 @@ export TICKET_URL_TEMPLATE=https://yourorg.atlassian.net/browse/{id}  # Jira
 # export TICKET_PATTERN='sc-[0-9]+'    # Shortcut
 # export TICKET_PATTERN='AB#[0-9]+'    # Azure DevOps
 ```
-
-If no API key is set, the script falls back to your `$EDITOR` for message input.
 
 ## Platform support
 
@@ -148,7 +163,7 @@ any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code
 
 ### Setup
 
-1. Install the MCP library: `pip install mcp`
+1. Install dependencies: `pip install -r requirements.txt`
 2. The `.vscode/mcp.json` in this repo auto-configures the server for VS Code.
    Clone the repo and open it — the `git-agent` server will appear in Copilot's
    tool list once agent mode is enabled.
@@ -159,7 +174,7 @@ any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code
 |---|---|
 | `get_git_status` | Branch, staged/unstaged files, recent log |
 | `get_staged_diff` | Full diff + stat + ticket ID for the staged changes |
-| `generate_commit_message` | LLM-generated commit message from staged diff |
+| `generate_commit_message` | LLM-generated commit message from staged diff (requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; in normal agent workflows the host agent generates the message instead) |
 | `commit` | Commit staged changes (optionally push) |
 | `create_pr` | Open a PR/MR on GitHub, GitLab, or Bitbucket |
 
@@ -192,7 +207,10 @@ Requires `pytest` — see `requirements-dev.txt`.
 
 ## Requirements
 
-- Python 3.9+ (stdlib only — no pip dependencies)
+- Python 3.9+
 - `git`
 - `gh` CLI (optional, preferred for GitHub PRs)
 - `glab` CLI (optional, preferred for GitLab MRs)
+
+`git_agent.py` is stdlib-only (no pip install needed for the CLI).
+The MCP server (`git_agent_mcp.py`) additionally requires `mcp>=1.2.0` — see `requirements.txt`.
