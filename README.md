@@ -13,7 +13,7 @@ A smart git commit, push, and PR tool. Works as a standalone CLI, with any AI ag
 
 ## Install
 
-Requires Python 3.9+ and `git`. No extra packages — stdlib only.
+Requires Python 3.9+ and `git`.
 
 ```bash
 git clone https://github.com/keivanzavari/git-agent
@@ -22,6 +22,16 @@ ln -sf "$PWD/git-agent/git-agent" /usr/local/bin/git-agent
 
 # Option B: add to PATH in your shell profile
 export PATH="$PWD/git-agent:$PATH"
+```
+
+`git_agent.py` is stdlib-only and needs no installation. Optional extras:
+
+```bash
+# MCP server (for VS Code / Copilot / Claude Desktop integration)
+pip install -r requirements.txt
+
+# Running the test suite
+pip install -r requirements-dev.txt
 ```
 
 ### Claude Code skill (optional)
@@ -178,7 +188,7 @@ and delegates execution to this script automatically.
 python3 -m pytest tests/ -v
 ```
 
-No test dependencies beyond `pytest` (install with `pip install pytest`).
+Requires `pytest` — see `requirements-dev.txt`.
 
 ## Requirements
 
