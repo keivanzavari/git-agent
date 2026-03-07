@@ -103,16 +103,22 @@ def create_pr(
     draft: bool = False,
     base: str = "",
 ) -> str:
-    """Create a pull request / merge request on the auto-detected platform.
-
-    Supports GitHub, GitLab, and Bitbucket. The platform and repository are
-    determined from the 'origin' remote URL automatically.
-
-    Args:
-        title:  PR/MR title.
-        body:   PR/MR description body (Markdown supported).
-        draft:  If True, open as a draft PR/MR. Default False.
-        base:   Base branch to merge into. Defaults to the repository default branch.
+    """
+    Create a pull request or merge request on the repository's detected remote platform.
+    
+    Determines the platform from the repository 'origin' remote URL and creates a PR (GitHub/Bitbucket) or MR (GitLab) from the current branch into `base` (or the repository default). Supports opening the request as a draft when `draft` is True.
+    
+    Parameters:
+        title (str): PR/MR title.
+        body (str): PR/MR description (Markdown supported).
+        draft (bool): If True, create the request as a draft. Default False.
+        base (str): Base branch to merge into; if empty, the repository default branch is used.
+    
+    Returns:
+        str: The PR/MR identifier or URL as returned by the platform client.
+    
+    Raises:
+        ValueError: If the remote URL's platform is unsupported (not GitHub, GitLab, or Bitbucket).
     """
     rem_url = ga.remote_url()
     platform = ga.detect_platform(rem_url)
@@ -125,6 +131,38 @@ def create_pr(
         return ga.create_gitlab_mr(title, body, branch, resolved_base, draft)
     elif platform == "bitbucket":
         return ga.create_bitbucket_pr(title, body, branch, resolved_base, draft)
+    else:
+        raise ValueError(
+            f"Unsupported platform for remote URL: {rem_url!r}. "
+            "Supported: github.com, gitlab.com, bitbucket.org"
+        )
+
+
+@mcp_server.tool()
+def get_pr_comments() -> dict:
+    """
+    Fetch comments and reviews for the open pull/merge request of the current branch.
+    
+    Determines the repository platform from the remote URL and returns the PR/MR number along with a list of comment objects. For some platforms (e.g., Bitbucket in this implementation) the comments list may be empty.
+    
+    Returns:
+        dict: {
+            'pr_number': int or None,
+            'comments': list of dicts with keys 'author', 'body', 'created_at', 'state'
+        }
+    
+    Raises:
+        ValueError: If the remote URL's platform is unsupported (supported: github.com, gitlab.com, bitbucket.org).
+    """
+    rem_url = ga.remote_url()
+    platform = ga.detect_platform(rem_url)
+
+    if platform == "github":
+        return ga.get_github_pr_comments()
+    elif platform == "gitlab":
+        return ga.get_gitlab_mr_comments()
+    elif platform == "bitbucket":
+        return ga.get_bitbucket_pr_comments()
     else:
         raise ValueError(
             f"Unsupported platform for remote URL: {rem_url!r}. "

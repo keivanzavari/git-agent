@@ -461,13 +461,119 @@ def create_bitbucket_pr(pr_title: str, pr_body: str, branch: str,
 
 
 def _cmd_exists(name: str) -> bool:
+    """
+    Check whether an executable command is available on the system PATH.
+    
+    Returns:
+        True if an executable with the given name is found on PATH, False otherwise.
+    """
     import shutil
     return shutil.which(name) is not None
+
+
+# ── PR comment retrieval ──────────────────────────────────────────────────────
+
+def get_github_pr_comments() -> dict:
+    """
+    Collect comments and reviews for the open GitHub pull request associated with the current branch.
+    
+    Requires the `gh` CLI; the function will exit with an error if `gh` is not available. If no open PR exists for the current branch, returns `{"pr_number": None, "comments": []}`.
+    
+    Returns:
+        result (dict): A dictionary with:
+            - pr_number (int | None): The pull request number, or `None` if no open PR.
+            - comments (list[dict]): A list of comment objects, each containing:
+                - author (str): Comment author's login.
+                - body (str): Comment text.
+                - created_at (str): ISO timestamp when the comment was created.
+                - state (str): Review state for review entries (e.g., "APPROVED") or empty string for regular comments.
+    """
+    if not _cmd_exists("gh"):
+        die("Install the gh CLI to read GitHub PR comments: https://cli.github.com")
+    raw = capture(["gh", "pr", "view", "--json", "number,comments,reviews"])
+    if not raw:
+        return {"pr_number": None, "comments": []}
+    data = json.loads(raw)
+    comments = [
+        {
+            "author":     c["author"]["login"],
+            "body":       c["body"],
+            "created_at": c["createdAt"],
+            "state":      "",
+        }
+        for c in data.get("comments", [])
+    ]
+    reviews = [
+        {
+            "author":     r["author"]["login"],
+            "body":       r["body"],
+            "created_at": r["submittedAt"],
+            "state":      r["state"],
+        }
+        for r in data.get("reviews", [])
+        if r.get("body")  # skip empty review submissions (e.g. approve-without-comment)
+    ]
+    return {"pr_number": data.get("number"), "comments": comments + reviews}
+
+
+def get_gitlab_mr_comments() -> dict:
+    """
+    Retrieve notes (comments) for the open GitLab merge request associated with the current branch.
+    
+    Requires the `glab` CLI to be available on PATH.
+    
+    Returns:
+        result (dict): Dictionary with keys:
+            - `pr_number` (int|None): IID of the MR, or `None` if no open MR exists.
+            - `comments` (list): List of comment objects; each comment is a dict with:
+                - `author` (str): Comment author's username.
+                - `body` (str): Comment text.
+                - `created_at` (str): ISO timestamp when the comment was created.
+                - `state` (str): Empty string (placeholder for consistency with other platforms).
+    """
+    if not _cmd_exists("glab"):
+        die("Install the glab CLI to read GitLab MR comments: https://gitlab.com/gitlab-org/cli")
+    raw = capture(["glab", "mr", "view", "--output", "json"])
+    if not raw:
+        return {"pr_number": None, "comments": []}
+    data = json.loads(raw)
+    notes = data.get("notes", [])
+    comments = [
+        {
+            "author":     n.get("author", {}).get("username", ""),
+            "body":       n.get("body", ""),
+            "created_at": n.get("created_at", ""),
+            "state":      "",
+        }
+        for n in (notes if isinstance(notes, list) else [])
+    ]
+    return {"pr_number": data.get("iid"), "comments": comments}
+
+
+def get_bitbucket_pr_comments() -> dict:
+    """
+    Return an empty set of PR comments for Bitbucket when comment listing is not available.
+    
+    Returns:
+        dict: A dictionary with keys `pr_number` and `comments`. `pr_number` is `None` and `comments` is an empty list because the Bitbucket CLI (`bkt`) does not provide PR comment listing.
+    """
+    warn("bkt does not support listing PR comments; returning empty.")
+    return {"pr_number": None, "comments": []}
 
 
 # ── interactive confirmation ──────────────────────────────────────────────────
 
 def confirm(prompt: str, *, default_yes: bool = True) -> bool:
+    """
+    Prompt the user with a yes/no question and return whether they confirmed.
+    
+    Parameters:
+        prompt (str): The question text displayed to the user.
+        default_yes (bool): If True, an empty response counts as confirmation; if False, an empty response counts as denial.
+    
+    Returns:
+        bool: `True` if the user confirmed, `False` otherwise.
+    """
     hint = "[Y/n]" if default_yes else "[y/N]"
     ans = input(f"{prompt} {hint} ").strip().lower()
     if ans == "":
