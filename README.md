@@ -13,6 +13,8 @@ A smart git commit, push, and PR tool. Works as a standalone CLI, with any AI ag
 
 ## Install
 
+Requires Python 3.9+ and `git`. No extra packages — stdlib only.
+
 ```bash
 git clone https://github.com/keivanzavari/git-agent
 # Option A: symlink globally
@@ -140,9 +142,17 @@ git-agent --message "<agent-generated message>" --pr --yes "<extra context>"
 For Claude Code, use the `/git-agent` skill which handles message generation
 and delegates execution to this script automatically.
 
+## Running tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+No test dependencies beyond `pytest` (install with `pip install pytest`).
+
 ## Requirements
 
-- `bash` 4+ (macOS ships with 3.2; `brew install bash` for the latest)
+- Python 3.9+ (stdlib only — no pip dependencies)
 - `git`
-- `python3` (for JSON handling — no `jq` needed)
-- `curl` (for API-based PR creation)
+- `gh` CLI (optional, preferred for GitHub PRs)
+- `glab` CLI (optional, preferred for GitLab MRs)

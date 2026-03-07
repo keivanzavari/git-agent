@@ -1,0 +1,715 @@
+#!/usr/bin/env python3
+"""git-agent — smart commit, push, and PR/MR tool.
+
+Works standalone (with an LLM API key) or as a tool called by any AI agent.
+Supports GitHub, GitLab, and Bitbucket.
+
+Usage:  git-agent [OPTIONS] [CONTEXT...]
+Docs:   https://github.com/keivanzavari/git-agent
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+from typing import Optional
+
+VERSION = "0.3.0"
+
+# ── ANSI colours ──────────────────────────────────────────────────────────────
+_TTY = sys.stdout.isatty()
+
+
+def _c(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _TTY else text
+
+
+def info(msg: str) -> None:
+    print(_c("34", "ℹ") + "  " + msg)
+
+
+def success(msg: str) -> None:
+    print(_c("32", "✓") + "  " + msg)
+
+
+def warn(msg: str) -> None:
+    print(_c("33;1", "⚠") + "  " + msg)
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(_c("31", "✗") + "  " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def header(msg: str) -> None:
+    print("\n" + _c("1", msg))
+
+
+# ── subprocess helpers ────────────────────────────────────────────────────────
+
+def run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd,
+        check=check,
+        capture_output=capture,
+        text=True,
+    )
+
+
+def capture(cmd: list[str], *, default: str = "") -> str:
+    """Run a command and return stripped stdout; return *default* on error."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else default
+
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="git-agent",
+        description=(
+            "Generates a structured commit message, commits staged changes, "
+            "pushes, and optionally opens a PR/MR. "
+            "Works with GitHub, GitLab, and Bitbucket."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""\
+ENVIRONMENT
+  ANTHROPIC_API_KEY   Use Claude to generate commit message and PR body
+  OPENAI_API_KEY      Use GPT-4o to generate commit message and PR body
+  GITHUB_TOKEN        GitHub token (fallback when gh CLI is not installed)
+  GITLAB_TOKEN        GitLab token (fallback when glab CLI is not installed)
+  BITBUCKET_USER      Bitbucket username (required for Bitbucket)
+  BITBUCKET_TOKEN     Bitbucket app password (required for Bitbucket)
+  TICKET_PATTERN      Regex to extract the ticket/issue ID from the branch name.
+                      Default: [A-Z]+-[0-9]+ (matches Jira, Linear, YouTrack, etc.)
+                      Override for other systems, e.g.:
+                        [0-9]+        GitHub / GitLab issue numbers
+                        sc-[0-9]+     Shortcut
+                        AB#[0-9]+     Azure DevOps
+  TICKET_URL_TEMPLATE URL template for linking to a ticket in PR bodies.
+                      Use {{id}} as the placeholder for the extracted ticket ID.
+                      Example: https://yourorg.atlassian.net/browse/{{id}}  (Jira)
+                               https://linear.app/myteam/issue/{{id}}       (Linear)
+                               https://github.com/org/repo/issues/{{id}}    (GitHub)
+                      When unset, the bare ticket ID is included as plain text.
+  JIRA_BASE_URL       Deprecated. Equivalent to setting
+                      TICKET_URL_TEMPLATE=$JIRA_BASE_URL/browse/{{id}}.
+
+EXAMPLES
+  # Standalone — LLM generates the commit message
+  git-agent
+  git-agent --pr "AUTH-42: adds Google SSO via short-lived JWTs in httpOnly cookies"
+
+  # Agent-driven — message already written by the calling agent
+  git-agent --message "Add OAuth2 login via Google" --pr --yes
+
+  # GitLab with draft MR
+  git-agent --pr --draft --base develop
+
+  # Commit only, no push
+  git-agent --no-push
+""",
+    )
+    p.add_argument("-m", "--message", metavar="MSG",
+                   help="Use this commit message (skip LLM generation)")
+    p.add_argument("--title", metavar="TITLE",
+                   help="Override PR/MR title (defaults to commit title)")
+    p.add_argument("--pr", action="store_true",
+                   help="Open a PR/MR after pushing")
+    p.add_argument("--draft", action="store_true",
+                   help="Open a draft PR/MR (implies --pr)")
+    p.add_argument("--base", metavar="BRANCH",
+                   help="Base branch for PR/MR (default: auto-detected)")
+    p.add_argument("--no-push", dest="no_push", action="store_true",
+                   help="Commit only, skip push and PR")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="Skip all confirmation prompts")
+    p.add_argument("-v", "--version", action="version", version=f"git-agent {VERSION}")
+    p.add_argument("context", nargs="*", metavar="CONTEXT",
+                   help="Extra context passed to the LLM (ticket summary, decisions, etc.)")
+    return p
+
+
+# ── git helpers ───────────────────────────────────────────────────────────────
+
+def ensure_git_repo() -> None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        die("Not inside a git repository.")
+
+
+def staged_files() -> list[str]:
+    return capture(["git", "diff", "--cached", "--name-only"]).splitlines()
+
+
+def unstaged_files() -> list[str]:
+    return capture(["git", "diff", "--name-only"]).splitlines()
+
+
+def current_branch() -> str:
+    return capture(["git", "branch", "--show-current"])
+
+
+def diff_stat() -> str:
+    return capture(["git", "diff", "--cached", "--stat"])
+
+
+def full_diff() -> str:
+    return capture(["git", "diff", "--cached"])
+
+
+def recent_log(n: int = 5) -> str:
+    return capture(["git", "log", "--oneline", f"-{n}"])
+
+
+def default_base_branch() -> str:
+    out = capture(["git", "remote", "show", "origin"])
+    m = re.search(r"HEAD branch:\s*(\S+)", out)
+    return m.group(1) if m else "main"
+
+
+def remote_url() -> str:
+    url = capture(["git", "remote", "get-url", "origin"])
+    if not url:
+        die("No remote 'origin' configured.")
+    return url
+
+
+# ── ticket ID extraction ──────────────────────────────────────────────────────
+
+def resolve_ticket_url_template() -> str:
+    """Return TICKET_URL_TEMPLATE, falling back to JIRA_BASE_URL for compat."""
+    tmpl = os.environ.get("TICKET_URL_TEMPLATE", "")
+    if not tmpl:
+        jira_base = os.environ.get("JIRA_BASE_URL", "")
+        if jira_base:
+            tmpl = f"{jira_base}/browse/{{id}}"
+    return tmpl
+
+
+def extract_ticket_id(branch: str) -> str:
+    pattern = os.environ.get("TICKET_PATTERN", r"[A-Z]+-[0-9]+")
+    m = re.search(pattern, branch)
+    return m.group(0) if m else ""
+
+
+def ticket_url(ticket_id: str, template: str) -> str:
+    """Return a Markdown link if template is set, otherwise the bare ID."""
+    if not template:
+        return ticket_id
+    encoded = urllib.parse.quote(ticket_id, safe="")
+    url = template.replace("{id}", encoded)
+    return f"[{ticket_id}]({url})"
+
+
+# ── LLM helpers ───────────────────────────────────────────────────────────────
+
+def _http_post(url: str, payload: dict, headers: dict) -> dict:
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        die(f"HTTP {exc.code} from {url}:\n{body}")
+
+
+def call_anthropic(prompt: str) -> str:
+    payload = {
+        "model": "claude-3-5-haiku-20241022",
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    resp = _http_post("https://api.anthropic.com/v1/messages", payload, headers)
+    return resp["content"][0]["text"].strip()
+
+
+def call_openai(prompt: str) -> str:
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+        "content-type": "application/json",
+    }
+    resp = _http_post("https://api.openai.com/v1/chat/completions", payload, headers)
+    return resp["choices"][0]["message"]["content"].strip()
+
+
+def call_llm(prompt: str) -> Optional[str]:
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return call_anthropic(prompt)
+    if os.environ.get("OPENAI_API_KEY"):
+        return call_openai(prompt)
+    return None
+
+
+# ── commit message generation ─────────────────────────────────────────────────
+
+def commit_prompt(ticket_id: str, branch: str, log: str,
+                  stat: str, diff: str, context: str) -> str:
+    return f"""\
+Generate a git commit message for the following staged changes.
+
+Format:
+  <title — imperative mood, ≤72 chars, no trailing period>
+
+  - Bullet: WHY or WHAT changed (not just file names or line counts)
+  - Bullet: non-obvious decisions or tradeoffs (omit if none)
+  (maximum 3 bullets; omit body entirely if title is self-explanatory)
+
+Rules:
+  - Prefix title with ticket ID if present: "[PROJ-123] Title"
+  - Imperative mood: "Add", "Fix", "Refactor" — never "Added" or "Adding"
+  - Do NOT list file names or line counts — git show handles that
+  - Match style of recent commit history if a pattern is evident
+
+Ticket ID: {ticket_id or 'none'}
+Context from caller: {context or 'none'}
+Branch: {branch}
+Recent history:
+{log or 'none'}
+
+Diff stat:
+{stat}
+
+Full diff:
+{diff}
+
+Reply with ONLY the commit message. No explanation, no markdown fences.
+"""
+
+
+def generate_commit_msg(ticket_id: str, branch: str, log: str,
+                        stat: str, diff: str, context: str) -> str:
+    prompt = commit_prompt(ticket_id, branch, log, stat, diff, context)
+    msg = call_llm(prompt)
+    if msg:
+        return msg
+
+    # No LLM — open $EDITOR or read from stdin
+    prefix = f"[{ticket_id}] " if ticket_id else ""
+    commented_stat = "\n".join(f"# {line}" for line in stat.splitlines())
+    template = (
+        f"{prefix}Short summary in imperative mood\n"
+        f"# Staged changes:\n{commented_stat}\n"
+        f"# Context: {context or 'none'}\n"
+        "# Delete comment lines before saving.\n"
+    )
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if editor:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", prefix="git-agent-msg-", delete=False
+        ) as tmp:
+            tmp.write(template)
+            tmp_path = tmp.name
+        try:
+            subprocess.run([editor, tmp_path], check=True)
+            with open(tmp_path) as f:
+                edited = "\n".join(
+                    line for line in f.read().splitlines()
+                    if not line.startswith("#")
+                ).strip()
+        finally:
+            os.unlink(tmp_path)
+        if not edited:
+            die("Empty commit message after editing. Aborted.")
+        return edited
+    else:
+        warn("No LLM API key and no $EDITOR set. Enter commit message (Ctrl-D to finish):")
+        return sys.stdin.read().strip()
+
+
+# ── PR body generation ────────────────────────────────────────────────────────
+
+def pr_body_prompt(ticket_id: str, ticket_link: str, commit_msg: str,
+                   stat: str, context: str) -> str:
+    ticket_section = f"\n## Ticket\n{ticket_link}" if ticket_id else ""
+    return f"""\
+Write a GitHub/GitLab PR description for this change.
+
+Format (use exactly these headings):
+## Summary
+2-4 bullet points: what this PR does and WHY
+
+## Changes
+Key implementation details or non-obvious decisions
+
+## Testing
+How to verify this works; what a reviewer should check
+{ticket_section}
+
+Commit message:
+{commit_msg}
+
+Diff stat:
+{stat}
+
+Extra context: {context or 'none'}
+
+Reply with ONLY the PR body. No extra explanation.
+"""
+
+
+def generate_pr_body(ticket_id: str, ticket_link: str, commit_msg: str,
+                     stat: str, context: str) -> str:
+    prompt = pr_body_prompt(ticket_id, ticket_link, commit_msg, stat, context)
+    body = call_llm(prompt)
+    if body:
+        return body
+
+    # Fallback: structured template
+    bullets = "\n".join(
+        line for line in commit_msg.splitlines()[2:]
+        if line.startswith("-")
+    ) or "- See commit message"
+    parts = [
+        "## Summary\n",
+        bullets,
+        "\n## Changes\n",
+        f"```\n{stat}\n```",
+        "\n## Testing\n",
+        "- Verify the changes work as expected",
+    ]
+    if context:
+        parts += ["\n## Context\n", context]
+    if ticket_id:
+        parts += ["\n## Ticket\n", ticket_link]
+    return "\n".join(parts)
+
+
+# ── platform detection & PR creation ─────────────────────────────────────────
+
+def detect_platform(url: str) -> str:
+    if "github.com" in url:
+        return "github"
+    if "gitlab.com" in url or re.search(r"gitlab\.", url):
+        return "gitlab"
+    if "bitbucket.org" in url:
+        return "bitbucket"
+    return "unknown"
+
+
+def parse_remote_path(url: str) -> str:
+    """Return the full repo path (owner[/groups]/repo) from any remote URL form."""
+    for pattern in [
+        r"ssh://[^@]*@?[^/]+/(.+?)(?:\.git)?$",   # ssh://
+        r"https?://[^/]+/(.+?)(?:\.git)?$",         # https://
+        r"[^@]*@[^:]+:(.+?)(?:\.git)?$",            # SCP-like git@host:path
+    ]:
+        m = re.match(pattern, url)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def parse_host(url: str) -> str:
+    """Extract hostname from any remote URL form."""
+    for pattern in [
+        r"https?://([^/]+)",
+        r"ssh://[^@]*@?([^/]+)",
+        r"[^@]*@([^:]+):",
+    ]:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def create_github_pr(pr_title: str, pr_body: str, branch: str,
+                     base: str, draft: bool,
+                     owner: str, repo: str) -> str:
+    if _cmd_exists("gh"):
+        args = ["gh", "pr", "create",
+                "--title", pr_title, "--body", pr_body, "--base", base]
+        if draft:
+            args.append("--draft")
+        result = run(args, capture=True)
+        return result.stdout.strip()
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        die("Set GITHUB_TOKEN or install the gh CLI to create GitHub PRs.")
+    payload = {
+        "title": pr_title, "body": pr_body,
+        "head": branch, "base": base, "draft": draft,
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "content-type": "application/json",
+    }
+    resp = _http_post(
+        f"https://api.github.com/repos/{owner}/{repo}/pulls",
+        payload, headers,
+    )
+    return resp["html_url"]
+
+
+def create_gitlab_mr(pr_title: str, pr_body: str, branch: str,
+                     base: str, draft: bool,
+                     owner_repo: str, remote_url_str: str) -> str:
+    if _cmd_exists("glab"):
+        args = ["glab", "mr", "create",
+                "--title", pr_title, "--description", pr_body,
+                "--target-branch", base, "--source-branch", branch]
+        if draft:
+            args.append("--draft")
+        result = run(args, capture=True)
+        return result.stdout.strip()
+
+    token = os.environ.get("GITLAB_TOKEN")
+    if not token:
+        die("Set GITLAB_TOKEN or install the glab CLI to create GitLab MRs.")
+
+    host = parse_host(remote_url_str)
+    encoded_path = urllib.parse.quote(owner_repo, safe="")
+    project_resp = _api_get(
+        f"https://{host}/api/v4/projects/{encoded_path}",
+        headers={"PRIVATE-TOKEN": token},
+    )
+    project_id = project_resp["id"]
+
+    title = ("Draft: " + pr_title) if draft else pr_title
+    payload = {
+        "source_branch": branch, "target_branch": base,
+        "title": title, "description": pr_body,
+    }
+    resp = _http_post(
+        f"https://{host}/api/v4/projects/{project_id}/merge_requests",
+        payload,
+        {"PRIVATE-TOKEN": token, "content-type": "application/json"},
+    )
+    return resp["web_url"]
+
+
+def create_bitbucket_pr(pr_title: str, pr_body: str, branch: str,
+                        base: str, owner: str, repo: str) -> str:
+    user = os.environ.get("BITBUCKET_USER")
+    token = os.environ.get("BITBUCKET_TOKEN")
+    if not user:
+        die("Set BITBUCKET_USER for Bitbucket PRs.")
+    if not token:
+        die("Set BITBUCKET_TOKEN for Bitbucket PRs.")
+
+    payload = {
+        "title": pr_title, "description": pr_body,
+        "source": {"branch": {"name": branch}},
+        "destination": {"branch": {"name": base}},
+        "close_source_branch": False,
+    }
+    data = json.dumps(payload).encode()
+    creds = urllib.parse.quote(user) + ":" + urllib.parse.quote(token)
+    req = urllib.request.Request(
+        f"https://api.bitbucket.org/2.0/repositories/{owner}/{repo}/pullrequests",
+        data=data,
+        headers={
+            "Authorization": "Basic " + __import__("base64").b64encode(
+                f"{user}:{token}".encode()
+            ).decode(),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.load(resp)["links"]["html"]["href"]
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        die(f"Bitbucket API call failed (HTTP {exc.code}):\n{body}")
+
+
+def _api_get(url: str, headers: dict) -> dict:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        die(f"HTTP {exc.code} from {url}:\n{body}")
+
+
+def _cmd_exists(name: str) -> bool:
+    import shutil
+    return shutil.which(name) is not None
+
+
+# ── interactive confirmation ──────────────────────────────────────────────────
+
+def confirm(prompt: str, *, default_yes: bool = True) -> bool:
+    hint = "[Y/n]" if default_yes else "[y/N]"
+    ans = input(f"{prompt} {hint} ").strip().lower()
+    if ans == "":
+        return default_yes
+    return ans == "y"
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.draft:
+        args.pr = True
+
+    # ── sanity checks ──────────────────────────────────────────────────────────
+    ensure_git_repo()
+
+    # ── staging check ──────────────────────────────────────────────────────────
+    if not staged_files():
+        unstaged = unstaged_files()
+        if not unstaged:
+            die("Nothing to commit — working tree is clean.")
+        warn("No staged changes. Unstaged files detected.")
+        run(["git", "diff", "--stat"], capture=False)
+        print()
+        if args.yes:
+            die("Use 'git add' to stage changes before running git-agent.")
+        if not confirm("Stage all changes?", default_yes=False):
+            die("Aborted. Stage changes with 'git add' first.")
+        run(["git", "add", "-A"])
+
+    # ── gather git context ─────────────────────────────────────────────────────
+    branch = current_branch()
+    stat = diff_stat()
+    diff = full_diff()
+    log = recent_log()
+    context = " ".join(args.context)
+
+    # ── extract ticket ID ──────────────────────────────────────────────────────
+    url_template = resolve_ticket_url_template()
+    ticket_id = extract_ticket_id(branch)
+    if ticket_id:
+        info(f"Ticket ID: {ticket_id}")
+
+    # ── build commit message ───────────────────────────────────────────────────
+    if args.message:
+        commit_msg = args.message
+    else:
+        header("Generating commit message...")
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            info("Using Claude (Haiku)")
+        elif os.environ.get("OPENAI_API_KEY"):
+            info("Using GPT-4o")
+        commit_msg = generate_commit_msg(ticket_id, branch, log, stat, diff, context)
+
+    # ── confirm commit message ─────────────────────────────────────────────────
+    header("Proposed commit message:")
+    print()
+    print(commit_msg)
+    print()
+
+    if not args.yes:
+        ans = input("Commit with this message? [Y/n/edit] ").strip().lower()
+        if ans in ("n", "no"):
+            print("Aborted.")
+            sys.exit(0)
+        if ans in ("e", "edit"):
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", prefix="git-agent-msg-", delete=False
+            ) as tmp:
+                tmp.write(commit_msg)
+                tmp_path = tmp.name
+            try:
+                subprocess.run([editor, tmp_path], check=True)
+                with open(tmp_path) as f:
+                    commit_msg = f.read().strip()
+            finally:
+                os.unlink(tmp_path)
+
+    # ── commit ─────────────────────────────────────────────────────────────────
+    run(["git", "commit", "-m", commit_msg])
+    success("Committed.")
+
+    if args.no_push:
+        sys.exit(0)
+
+    # ── push ───────────────────────────────────────────────────────────────────
+    if not args.yes:
+        if not confirm(f"Push to origin/{branch}?"):
+            print("Aborted.")
+            sys.exit(0)
+
+    result = subprocess.run(["git", "push", "origin", "HEAD"], capture_output=False)
+    if result.returncode != 0:
+        warn("Push failed. If the remote is ahead, run: git pull --rebase")
+        sys.exit(1)
+    success("Pushed.")
+
+    # ── prompt for PR if not requested ────────────────────────────────────────
+    if not args.pr and not args.yes:
+        if confirm("Open a PR/MR?", default_yes=False):
+            args.pr = True
+
+    if not args.pr:
+        sys.exit(0)
+
+    # ── detect platform ────────────────────────────────────────────────────────
+    rem_url = remote_url()
+    platform = detect_platform(rem_url)
+    owner_repo = parse_remote_path(rem_url)
+    owner = owner_repo.split("/")[0]
+    repo = owner_repo.split("/")[-1]
+    info(f"Platform: {platform} ({owner_repo})")
+
+    # ── detect base branch ─────────────────────────────────────────────────────
+    base = args.base or default_base_branch()
+    if branch == base:
+        die(f"Current branch is the base branch ({base}). Create a feature branch first.")
+
+    # ── PR title & body ────────────────────────────────────────────────────────
+    pr_title = args.title or commit_msg.splitlines()[0]
+    t_link = ticket_url(ticket_id, url_template)
+    pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, context)
+
+    # ── confirm PR ─────────────────────────────────────────────────────────────
+    header("Proposed PR:")
+    print(f"  Title  : {pr_title}")
+    print(f"  Base   : {base} ← {branch}")
+    print(f"  Draft  : {args.draft}")
+    print()
+    print(pr_body)
+    print()
+
+    if not args.yes:
+        if not confirm("Create PR?"):
+            print("Aborted.")
+            sys.exit(0)
+
+    # ── create PR ──────────────────────────────────────────────────────────────
+    if platform == "github":
+        pr_url = create_github_pr(pr_title, pr_body, branch, base, args.draft, owner, repo)
+    elif platform == "gitlab":
+        pr_url = create_gitlab_mr(pr_title, pr_body, branch, base, args.draft, owner_repo, rem_url)
+    elif platform == "bitbucket":
+        pr_url = create_bitbucket_pr(pr_title, pr_body, branch, base, owner, repo)
+    else:
+        warn(f"Unrecognised platform. Remote: {rem_url}")
+        warn("Supported: github.com, gitlab.com, bitbucket.org")
+        sys.exit(1)
+
+    success(f"PR created: {pr_url}")
+
+
+if __name__ == "__main__":
+    main()

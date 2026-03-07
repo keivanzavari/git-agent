@@ -38,8 +38,9 @@ Ask the user which files to stage. Do not run `git add` without confirmation.
 
 Check in order:
 1. `command -v git-agent` — installed globally
-2. `./git-agent` — in the current repo root
-3. The skill's own directory (same dir as this SKILL.md)
+2. `./git-agent` — wrapper in the current repo root
+3. `./git_agent.py` — Python module in the current repo root
+4. The skill's own directory (same dir as this SKILL.md)
 
 If not found, inform the user and fall back to inline execution (Step 5b).
 
