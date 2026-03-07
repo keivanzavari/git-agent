@@ -13,6 +13,8 @@ A smart git commit, push, and PR tool. Works as a standalone CLI, with any AI ag
 
 ## Install
 
+Requires Python 3.9+ and `git`. No extra packages — stdlib only.
+
 ```bash
 git clone https://github.com/keivanzavari/git-agent
 # Option A: symlink globally
@@ -128,6 +130,36 @@ TICKET_PATTERN='[0-9]+'      issue/123-fix-login   →   [123] ...   (GitHub/Git
 TICKET_PATTERN='sc-[0-9]+'   sc-456/dark-mode      →   [sc-456] ...  (Shortcut)
 ```
 
+## VS Code / Copilot integration (MCP)
+
+git-agent ships with an MCP server (`git_agent_mcp.py`) that exposes its tools to
+any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code and
+**Claude Desktop**.
+
+### Setup
+
+1. Install the MCP library: `pip install mcp`
+2. The `.vscode/mcp.json` in this repo auto-configures the server for VS Code.
+   Clone the repo and open it — the `git-agent` server will appear in Copilot's
+   tool list once agent mode is enabled.
+
+### Available tools
+
+| Tool | What it does |
+|---|---|
+| `get_git_status` | Branch, staged/unstaged files, recent log |
+| `get_staged_diff` | Full diff + stat + ticket ID for the staged changes |
+| `generate_commit_message` | LLM-generated commit message from staged diff |
+| `commit` | Commit staged changes (optionally push) |
+| `create_pr` | Open a PR/MR on GitHub, GitLab, or Bitbucket |
+
+### Example Copilot agent prompts
+
+- "What's staged right now?" → calls `get_staged_diff`
+- "Generate a commit message for my changes" → calls `generate_commit_message`
+- "Commit and push with message: Fix null pointer in auth" → calls `commit`
+- "Open a draft PR against develop" → calls `create_pr`
+
 ## Using with AI agents
 
 Any agent with `Bash` tool access can call `git-agent` directly:
@@ -140,9 +172,17 @@ git-agent --message "<agent-generated message>" --pr --yes "<extra context>"
 For Claude Code, use the `/git-agent` skill which handles message generation
 and delegates execution to this script automatically.
 
+## Running tests
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+No test dependencies beyond `pytest` (install with `pip install pytest`).
+
 ## Requirements
 
-- `bash` 4+ (macOS ships with 3.2; `brew install bash` for the latest)
+- Python 3.9+ (stdlib only — no pip dependencies)
 - `git`
-- `python3` (for JSON handling — no `jq` needed)
-- `curl` (for API-based PR creation)
+- `gh` CLI (optional, preferred for GitHub PRs)
+- `glab` CLI (optional, preferred for GitLab MRs)
