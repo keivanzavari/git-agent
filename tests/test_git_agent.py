@@ -397,3 +397,115 @@ class TestGeneratePrBody:
             result = ga.generate_pr_body("", "", "Add SSO", "stat", "Design decision: use JWTs")
         assert "## Context" in result
         assert "use JWTs" in result
+
+
+# ===========================================================================
+# get_github_pr_comments
+# ===========================================================================
+class TestGetGithubPrComments:
+    _sample_json = json.dumps({
+        "number": 42,
+        "comments": [
+            {
+                "author": {"login": "alice"},
+                "body": "Please add tests",
+                "createdAt": "2026-03-05T10:00:00Z",
+            }
+        ],
+        "reviews": [
+            {
+                "author": {"login": "bob"},
+                "body": "Looks good, minor nit",
+                "submittedAt": "2026-03-05T11:00:00Z",
+                "state": "CHANGES_REQUESTED",
+            },
+            {
+                "author": {"login": "carol"},
+                "body": "",
+                "submittedAt": "2026-03-05T12:00:00Z",
+                "state": "APPROVED",
+            },
+        ],
+    })
+
+    def test_returns_comments_and_reviews(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "capture", return_value=self._sample_json):
+            result = ga.get_github_pr_comments()
+
+        assert result["pr_number"] == 42
+        authors = {c["author"] for c in result["comments"]}
+        assert "alice" in authors
+        assert "bob" in authors
+
+    def test_no_pr_returns_empty(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "capture", return_value=""):
+            result = ga.get_github_pr_comments()
+
+        assert result == {"pr_number": None, "comments": []}
+
+    def test_empty_review_body_skipped(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "capture", return_value=self._sample_json):
+            result = ga.get_github_pr_comments()
+
+        # carol approved with empty body — should not appear
+        authors = [c["author"] for c in result["comments"]]
+        assert "carol" not in authors
+
+    def test_dies_without_gh_cli(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             pytest.raises(SystemExit):
+            ga.get_github_pr_comments()
+
+
+# ===========================================================================
+# get_gitlab_mr_comments
+# ===========================================================================
+class TestGetGitlabMrComments:
+    _sample_json = json.dumps({
+        "iid": 7,
+        "notes": [
+            {
+                "author": {"username": "dave"},
+                "body": "Fix the typo",
+                "created_at": "2026-03-06T09:00:00Z",
+            }
+        ],
+    })
+
+    def test_returns_notes_as_comments(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "capture", return_value=self._sample_json):
+            result = ga.get_gitlab_mr_comments()
+
+        assert result["pr_number"] == 7
+        assert len(result["comments"]) == 1
+        assert result["comments"][0]["author"] == "dave"
+        assert result["comments"][0]["body"] == "Fix the typo"
+
+    def test_no_mr_returns_empty(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "capture", return_value=""):
+            result = ga.get_gitlab_mr_comments()
+
+        assert result == {"pr_number": None, "comments": []}
+
+    def test_dies_without_glab_cli(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             pytest.raises(SystemExit):
+            ga.get_gitlab_mr_comments()
+
+
+# ===========================================================================
+# get_bitbucket_pr_comments
+# ===========================================================================
+class TestGetBitbucketPrComments:
+    def test_warns_and_returns_empty(self):
+        with patch.object(ga, "warn") as mock_warn:
+            result = ga.get_bitbucket_pr_comments()
+
+        assert result == {"pr_number": None, "comments": []}
+        mock_warn.assert_called_once()
+        assert "bkt" in mock_warn.call_args[0][0].lower()

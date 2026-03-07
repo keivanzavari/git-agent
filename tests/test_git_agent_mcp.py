@@ -273,3 +273,46 @@ class TestCreatePr:
              patch.object(ga, "default_base_branch", return_value="main"):
             with pytest.raises(ValueError, match="Unsupported platform"):
                 git_agent_mcp.create_pr(title="T", body="B")
+
+
+# ===========================================================================
+# get_pr_comments
+# ===========================================================================
+class TestGetPrComments:
+    _expected = {"pr_number": 42, "comments": [{"author": "alice", "body": "LGTM",
+                                                 "created_at": "2026-01-01T00:00:00Z",
+                                                 "state": ""}]}
+
+    def test_github_dispatches_to_github_fn(self):
+        with patch.object(ga, "remote_url", return_value="git@github.com:org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="github"), \
+             patch.object(ga, "get_github_pr_comments", return_value=self._expected) as mock_fn:
+            result = git_agent_mcp.get_pr_comments()
+
+        mock_fn.assert_called_once()
+        assert result == self._expected
+
+    def test_gitlab_dispatches_to_gitlab_fn(self):
+        with patch.object(ga, "remote_url", return_value="git@gitlab.com:org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="gitlab"), \
+             patch.object(ga, "get_gitlab_mr_comments", return_value=self._expected) as mock_fn:
+            result = git_agent_mcp.get_pr_comments()
+
+        mock_fn.assert_called_once()
+        assert result == self._expected
+
+    def test_bitbucket_dispatches_to_bitbucket_fn(self):
+        empty = {"pr_number": None, "comments": []}
+        with patch.object(ga, "remote_url", return_value="https://bitbucket.org/org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="bitbucket"), \
+             patch.object(ga, "get_bitbucket_pr_comments", return_value=empty) as mock_fn:
+            result = git_agent_mcp.get_pr_comments()
+
+        mock_fn.assert_called_once()
+        assert result == empty
+
+    def test_unsupported_platform_raises_value_error(self):
+        with patch.object(ga, "remote_url", return_value="https://codeberg.org/org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="unknown"):
+            with pytest.raises(ValueError, match="Unsupported platform"):
+                git_agent_mcp.get_pr_comments()

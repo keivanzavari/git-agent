@@ -174,6 +174,7 @@ any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code
 | `generate_commit_message` | LLM-generated commit message from staged diff (requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; in normal agent workflows the host agent generates the message instead) |
 | `commit` | Commit staged changes (optionally push) |
 | `create_pr` | Open a PR/MR on GitHub, GitLab, or Bitbucket |
+| `get_pr_comments` | Fetch reviewer comments and reviews on the open PR/MR for the current branch |
 
 ### Example Copilot agent prompts
 
@@ -181,6 +182,7 @@ any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code
 - "Generate a commit message for my changes" → calls `generate_commit_message`
 - "Commit and push with message: Fix null pointer in auth" → calls `commit`
 - "Open a draft PR against develop" → calls `create_pr`
+- "What are the review comments on my PR?" → calls `get_pr_comments`
 
 ## Using with AI agents
 
