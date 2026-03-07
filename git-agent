@@ -1,4 +1,5 @@
 #!/bin/sh
 # Entry-point wrapper — delegates to git_agent.py (Python rewrite).
 # Install via: ln -sf "$PWD/git-agent" /usr/local/bin/git-agent
-exec python3 "$(dirname "$0")/git_agent.py" "$@"
+SCRIPT_DIR="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve().parent)' "$0")"
+exec python3 "$SCRIPT_DIR/git_agent.py" "$@"

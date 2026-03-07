@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,8 @@ import urllib.request
 from typing import Optional
 
 VERSION = "0.3.0"
+
+HTTP_TIMEOUT = 30
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 _TTY = sys.stdout.isatty()
@@ -217,11 +220,15 @@ def _http_post(url: str, payload: dict, headers: dict) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
         die(f"HTTP {exc.code} from {url}:\n{body}")
+    except urllib.error.URLError as exc:
+        die(f"Request to {url} failed: {exc.reason}")
+    except json.JSONDecodeError as exc:
+        die(f"Invalid JSON from {url}: {exc}")
 
 
 def call_anthropic(prompt: str) -> str:
@@ -321,7 +328,7 @@ def generate_commit_msg(ticket_id: str, branch: str, log: str,
             tmp.write(template)
             tmp_path = tmp.name
         try:
-            subprocess.run([editor, tmp_path], check=True)
+            subprocess.run([*shlex.split(editor), tmp_path], check=True)
             with open(tmp_path) as f:
                 edited = "\n".join(
                     line for line in f.read().splitlines()
@@ -530,21 +537,29 @@ def create_bitbucket_pr(pr_title: str, pr_body: str, branch: str,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             return json.load(resp)["links"]["html"]["href"]
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
         die(f"Bitbucket API call failed (HTTP {exc.code}):\n{body}")
+    except urllib.error.URLError as exc:
+        die(f"Request to Bitbucket API failed: {exc.reason}")
+    except json.JSONDecodeError as exc:
+        die(f"Invalid JSON from Bitbucket API: {exc}")
 
 
 def _api_get(url: str, headers: dict) -> dict:
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
         die(f"HTTP {exc.code} from {url}:\n{body}")
+    except urllib.error.URLError as exc:
+        die(f"Request to {url} failed: {exc.reason}")
+    except json.JSONDecodeError as exc:
+        die(f"Invalid JSON from {url}: {exc}")
 
 
 def _cmd_exists(name: str) -> bool:
@@ -590,6 +605,8 @@ def main() -> None:
 
     # ── gather git context ─────────────────────────────────────────────────────
     branch = current_branch()
+    if not branch:
+        die("Detached HEAD detected. Check out a branch before running git-agent.")
     stat = diff_stat()
     diff = full_diff()
     log = recent_log()
@@ -631,7 +648,7 @@ def main() -> None:
                 tmp.write(commit_msg)
                 tmp_path = tmp.name
             try:
-                subprocess.run([editor, tmp_path], check=True)
+                subprocess.run([*shlex.split(editor), tmp_path], check=True)
                 with open(tmp_path) as f:
                     commit_msg = f.read().strip()
             finally:

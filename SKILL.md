@@ -75,11 +75,22 @@ Wait for confirmation before proceeding.
 
 ## Step 5a — Delegate to git-agent script (preferred)
 
-Once the user confirms the message, call the script:
+Once the user confirms the message, resolve the script path using the same
+discovery logic from Step 2, then call it:
 
 ```bash
+# Resolve which executable to run (mirrors Step 2 discovery):
+repo_root="$(git rev-parse --show-toplevel)"
+if command -v git-agent >/dev/null 2>&1; then
+  GIT_AGENT=(git-agent)
+elif [ -x "$repo_root/git-agent" ]; then
+  GIT_AGENT=("$repo_root/git-agent")
+elif [ -f "$repo_root/git_agent.py" ]; then
+  GIT_AGENT=(python3 "$repo_root/git_agent.py")
+fi
+
 # Parse --pr / --draft / --base / "commit only" from $ARGUMENTS, then:
-git-agent \
+"${GIT_AGENT[@]}" \
   --message "<confirmed message>" \
   [--pr] [--draft] [--base <branch>] \
   --yes \
