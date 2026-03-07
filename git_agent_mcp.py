@@ -132,5 +132,32 @@ def create_pr(
         )
 
 
+@mcp_server.tool()
+def get_pr_comments() -> dict:
+    """Fetch comments and reviews on the open PR/MR for the current branch.
+
+    Supports GitHub (gh CLI) and GitLab (glab CLI). Returns a dict with
+    'pr_number' (int or None) and 'comments' (list of dicts, each with keys
+    'author', 'body', 'created_at', 'state').
+
+    Useful for agents that need to read reviewer feedback and address it.
+    Bitbucket is supported but returns an empty list (bkt has no comment API).
+    """
+    rem_url = ga.remote_url()
+    platform = ga.detect_platform(rem_url)
+
+    if platform == "github":
+        return ga.get_github_pr_comments()
+    elif platform == "gitlab":
+        return ga.get_gitlab_mr_comments()
+    elif platform == "bitbucket":
+        return ga.get_bitbucket_pr_comments()
+    else:
+        raise ValueError(
+            f"Unsupported platform for remote URL: {rem_url!r}. "
+            "Supported: github.com, gitlab.com, bitbucket.org"
+        )
+
+
 if __name__ == "__main__":
     mcp_server.run()
