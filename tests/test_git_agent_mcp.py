@@ -216,16 +216,13 @@ class TestCreatePr:
         expected_url = "https://github.com/myorg/myrepo/pull/42"
         with patch.object(ga, "remote_url", return_value="git@github.com:myorg/myrepo.git"), \
              patch.object(ga, "detect_platform", return_value="github"), \
-             patch.object(ga, "parse_remote_path", return_value="myorg/myrepo"), \
              patch.object(ga, "current_branch", return_value="feature/AUTH-1/sso"), \
              patch.object(ga, "default_base_branch", return_value="main"), \
              patch.object(ga, "create_github_pr", return_value=expected_url) as mock_create:
             result = git_agent_mcp.create_pr(title="Add SSO", body="PR body")
 
         mock_create.assert_called_once_with(
-            "Add SSO", "PR body",
-            "feature/AUTH-1/sso", "main",
-            False, "myorg", "myrepo",
+            "Add SSO", "PR body", "feature/AUTH-1/sso", "main", False,
         )
         assert result == expected_url
 
@@ -233,16 +230,13 @@ class TestCreatePr:
         expected_url = "https://gitlab.com/myorg/myrepo/-/merge_requests/7"
         with patch.object(ga, "remote_url", return_value="git@gitlab.com:myorg/myrepo.git"), \
              patch.object(ga, "detect_platform", return_value="gitlab"), \
-             patch.object(ga, "parse_remote_path", return_value="myorg/myrepo"), \
              patch.object(ga, "current_branch", return_value="feature/T-5/thing"), \
              patch.object(ga, "default_base_branch", return_value="main"), \
              patch.object(ga, "create_gitlab_mr", return_value=expected_url) as mock_create:
             result = git_agent_mcp.create_pr(title="Add thing", body="Body", draft=True)
 
         mock_create.assert_called_once_with(
-            "Add thing", "Body",
-            "feature/T-5/thing", "main",
-            True, "myorg/myrepo", "git@gitlab.com:myorg/myrepo.git",
+            "Add thing", "Body", "feature/T-5/thing", "main", True,
         )
         assert result == expected_url
 
@@ -250,23 +244,19 @@ class TestCreatePr:
         expected_url = "https://bitbucket.org/myorg/myrepo/pull-requests/3"
         with patch.object(ga, "remote_url", return_value="https://bitbucket.org/myorg/myrepo.git"), \
              patch.object(ga, "detect_platform", return_value="bitbucket"), \
-             patch.object(ga, "parse_remote_path", return_value="myorg/myrepo"), \
              patch.object(ga, "current_branch", return_value="feature/my-feat"), \
              patch.object(ga, "default_base_branch", return_value="main"), \
              patch.object(ga, "create_bitbucket_pr", return_value=expected_url) as mock_create:
             result = git_agent_mcp.create_pr(title="My feat", body="Body")
 
         mock_create.assert_called_once_with(
-            "My feat", "Body",
-            "feature/my-feat", "main",
-            "myorg", "myrepo",
+            "My feat", "Body", "feature/my-feat", "main", False,
         )
         assert result == expected_url
 
     def test_custom_base_branch_used_when_provided(self):
         with patch.object(ga, "remote_url", return_value="git@github.com:org/repo.git"), \
              patch.object(ga, "detect_platform", return_value="github"), \
-             patch.object(ga, "parse_remote_path", return_value="org/repo"), \
              patch.object(ga, "current_branch", return_value="feature/x"), \
              patch.object(ga, "default_base_branch", return_value="main") as mock_default, \
              patch.object(ga, "create_github_pr", return_value="https://github.com/org/repo/pull/1") as mock_create:
@@ -279,7 +269,6 @@ class TestCreatePr:
     def test_unsupported_platform_raises_value_error(self):
         with patch.object(ga, "remote_url", return_value="https://codeberg.org/org/repo.git"), \
              patch.object(ga, "detect_platform", return_value="unknown"), \
-             patch.object(ga, "parse_remote_path", return_value="org/repo"), \
              patch.object(ga, "current_branch", return_value="feature/x"), \
              patch.object(ga, "default_base_branch", return_value="main"):
             with pytest.raises(ValueError, match="Unsupported platform"):
