@@ -124,8 +124,15 @@ export TICKET_URL_TEMPLATE=https://yourorg.atlassian.net/browse/{id}  # Jira
 | Bitbucket | `bkt` | `brew install avivsinai/tap/bitbucket-cli` |
 
 The platform is auto-detected from `git remote get-url origin`. Each CLI handles its
-own authentication — run `gh auth login`, `glab auth login`, or `bkt auth login` once
-to set up credentials. Commits and pushes work without any CLI installed.
+own authentication — run once to set up credentials:
+
+```bash
+gh auth login                                                   # GitHub
+glab auth login                                                 # GitLab
+bkt auth login https://bitbucket.org --kind cloud --web        # Bitbucket Cloud
+```
+
+Commits and pushes work without any CLI installed.
 
 ## Ticket ID extraction
 

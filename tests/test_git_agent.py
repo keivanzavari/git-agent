@@ -301,9 +301,20 @@ class TestCreateBitbucketPr:
              patch.object(ga, "run") as mock_run, \
              patch.object(ga, "warn") as mock_warn:
             mock_run.return_value = SimpleNamespace(stdout="url\n")
-            ga.create_bitbucket_pr("Title", "Body", "feature/x", "main", True)
-        mock_warn.assert_called_once()
-        assert "draft" in mock_warn.call_args[0][0].lower()
+            ga.create_bitbucket_pr("Title", "", "feature/x", "main", True)
+        # draft warning should be emitted
+        warn_messages = [c[0][0].lower() for c in mock_warn.call_args_list]
+        assert any("draft" in m for m in warn_messages)
+        mock_run.assert_called_once()
+
+    def test_pr_body_warns_and_creates_anyway(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run, \
+             patch.object(ga, "warn") as mock_warn:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.create_bitbucket_pr("Title", "Some body text", "feature/x", "main", False)
+        warn_messages = [c[0][0].lower() for c in mock_warn.call_args_list]
+        assert any("description" in m for m in warn_messages)
         mock_run.assert_called_once()
 
     def test_dies_without_bkt(self):

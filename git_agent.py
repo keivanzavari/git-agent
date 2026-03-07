@@ -453,6 +453,8 @@ def create_bitbucket_pr(pr_title: str, pr_body: str, branch: str,
             "brew install avivsinai/tap/bitbucket-cli")
     if draft:
         warn("bkt does not support draft PRs; creating a regular PR.")
+    if pr_body:
+        warn("bkt does not support setting a PR description; body will not be included.")
     args = ["bkt", "pr", "create",
             "--title", pr_title, "--source", branch, "--target", base]
     return run(args, capture=True).stdout.strip()
