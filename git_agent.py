@@ -99,6 +99,12 @@ ENVIRONMENT
                       When unset, the bare ticket ID is included as plain text.
   JIRA_BASE_URL       Deprecated. Equivalent to setting
                       TICKET_URL_TEMPLATE=$JIRA_BASE_URL/browse/{{id}}.
+  BITBUCKET_SERVER_URL  Base URL of your Bitbucket Server instance. Used to
+                        detect the platform for self-hosted installs and
+                        forwarded to bb-cli for API calls.
+                        Example: https://bitbucket.mycompany.com
+  BITBUCKET_TOKEN     API token for bb-cli (HTTP access token from Bitbucket
+                      Server: Personal Settings → HTTP access tokens).
 
 EXAMPLES
   # Standalone — LLM generates the commit message
@@ -407,6 +413,12 @@ def detect_platform(url: str) -> str:
         return "gitlab"
     if "bitbucket.org" in url:
         return "bitbucket"
+    # Bitbucket Server: check if the remote URL hostname matches BITBUCKET_SERVER_URL
+    server_url = os.environ.get("BITBUCKET_SERVER_URL", "")
+    if server_url:
+        server_host = urllib.parse.urlparse(server_url).hostname or ""
+        if server_host and server_host in url:
+            return "bitbucket"
     return "unknown"
 
 
@@ -421,6 +433,23 @@ def parse_remote_path(url: str) -> str:
         if m:
             return m.group(1)
     return ""
+
+
+def parse_bitbucket_server_path(url: str) -> tuple[str, str]:
+    """Extract (project_key, repo_slug) from a Bitbucket Server remote URL.
+
+    Handles all common remote URL forms:
+      - SCP-like:  git@host:PROJECT/repo.git       → (PROJECT, repo)
+      - HTTPS:     https://host/scm/PROJECT/repo.git → (PROJECT, repo)
+      - SSH URI:   ssh://git@host:7999/PROJECT/repo.git → (PROJECT, repo)
+    """
+    path = parse_remote_path(url)                     # e.g. "scm/PROJECT/repo"
+    parts = [p for p in path.split("/") if p]
+    if parts and parts[0].lower() == "scm":
+        parts = parts[1:]                             # strip leading scm/
+    if len(parts) >= 2:
+        return parts[-2], parts[-1]                   # (project_key, repo_slug)
+    return "", ""
 
 
 def create_github_pr(pr_title: str, pr_body: str, branch: str,
@@ -448,16 +477,28 @@ def create_gitlab_mr(pr_title: str, pr_body: str, branch: str,
 
 def create_bitbucket_pr(pr_title: str, pr_body: str, branch: str,
                         base: str, draft: bool) -> str:
-    if not _cmd_exists("bkt"):
-        die("Install the bkt CLI to create Bitbucket PRs: "
-            "brew install avivsinai/tap/bitbucket-cli")
-    if draft:
-        warn("bkt does not support draft PRs; creating a regular PR.")
-    if pr_body:
-        warn("bkt does not support setting a PR description; body will not be included.")
-    args = ["bkt", "pr", "create",
-            "--title", pr_title, "--source", branch, "--target", base]
-    return run(args, capture=True).stdout.strip()
+    if _cmd_exists("bb"):
+        project, repo = parse_bitbucket_server_path(remote_url())
+        args = ["bb", "pr", "create",
+                "--title", pr_title, "--description", pr_body,
+                "--source", branch, "--target", base]
+        if project:
+            args += ["--project", project]
+        if repo:
+            args += ["--repo", repo]
+        if draft:
+            args.append("--draft")
+        return run(args, capture=True).stdout.strip()
+    elif _cmd_exists("bkt"):
+        if draft:
+            warn("bkt does not support draft PRs; creating a regular PR.")
+        if pr_body:
+            warn("bkt does not support setting a PR description; body will not be included.")
+        args = ["bkt", "pr", "create",
+                "--title", pr_title, "--source", branch, "--target", base]
+        return run(args, capture=True).stdout.strip()
+    else:
+        die("Install bb (bb-cli) to create Bitbucket PRs.")
 
 
 def _cmd_exists(name: str) -> bool:
@@ -527,9 +568,60 @@ def get_gitlab_mr_comments() -> dict:
 
 
 def get_bitbucket_pr_comments() -> dict:
-    """Return an empty comment list for Bitbucket (bkt has no comment-listing support)."""
-    warn("bkt does not support listing PR comments; returning empty.")
-    return {"pr_number": None, "comments": []}
+    """Return comments on the open PR for the current branch using bb-cli.
+
+    Requires the ``bb`` CLI (bb-cli). Returns ``{"pr_number": None, "comments": []}``
+    when bb is not available or no open PR exists for this branch.
+    """
+    if not _cmd_exists("bb"):
+        warn("bb (bb-cli) is not installed; cannot list Bitbucket PR comments.")
+        return {"pr_number": None, "comments": []}
+
+    branch = current_branch()
+
+    # Find the open PR for the current branch via bb pr list --json
+    raw = capture(["bb", "pr", "list", "--json"])
+    if not raw:
+        return {"pr_number": None, "comments": []}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        warn("Could not parse bb pr list output.")
+        return {"pr_number": None, "comments": []}
+
+    # bb pr list --json returns {pullRequests: [{id, fromBranch, ...}], ...}
+    pr = next(
+        (p for p in data.get("pullRequests", []) if p.get("fromBranch") == branch),
+        None,
+    )
+    if not pr:
+        return {"pr_number": None, "comments": []}
+
+    pr_id = pr["id"]
+
+    # Fetch comments for the found PR
+    raw = capture(["bb", "pr", "comments", str(pr_id), "--json"])
+    if not raw:
+        return {"pr_number": pr_id, "comments": []}
+    try:
+        cdata = json.loads(raw)
+    except json.JSONDecodeError:
+        warn("Could not parse bb pr comments output.")
+        return {"pr_number": pr_id, "comments": []}
+
+    # bb pr comments --json passes through the raw Bitbucket API response:
+    # {values: [{text, author: {displayName, name}, createdDate, state, deleted}]}
+    comments = [
+        {
+            "author":     c.get("author", {}).get("displayName") or c.get("author", {}).get("name", ""),
+            "body":       c.get("text", ""),
+            "created_at": str(c.get("createdDate", "")),
+            "state":      c.get("state", ""),
+        }
+        for c in cdata.get("values", [])
+        if not c.get("deleted") and c.get("text")
+    ]
+    return {"pr_number": pr_id, "comments": comments}
 
 
 # ── interactive confirmation ──────────────────────────────────────────────────

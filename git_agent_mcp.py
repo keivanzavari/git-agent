@@ -141,7 +141,7 @@ def get_pr_comments() -> dict:
     'author', 'body', 'created_at', 'state').
 
     Useful for agents that need to read reviewer feedback and address it.
-    Bitbucket is supported but returns an empty list (bkt has no comment API).
+    Bitbucket is fully supported via bb-cli (``bb pr comments``).
     """
     rem_url = ga.remote_url()
     platform = ga.detect_platform(rem_url)
