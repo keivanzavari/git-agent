@@ -624,6 +624,128 @@ def get_bitbucket_pr_comments() -> dict:
     return {"pr_number": pr_id, "comments": comments}
 
 
+# ── PR/MR update ──────────────────────────────────────────────────────────────
+
+def update_github_pr(title: str = "", body: str = "", base: str = "",
+                     draft: Optional[bool] = None) -> str:
+    """Update the open PR for the current branch on GitHub.
+
+    Uses ``gh pr edit`` for title/body/base changes and
+    ``gh pr ready`` / ``gh pr ready --undo`` for draft toggling.
+    Requires the ``gh`` CLI.
+    """
+    if not _cmd_exists("gh"):
+        die("Install the gh CLI to update GitHub PRs: https://cli.github.com")
+
+    result_parts = []
+
+    edit_args = ["gh", "pr", "edit"]
+    if title: edit_args += ["--title", title]
+    if body:  edit_args += ["--body", body]
+    if base:  edit_args += ["--base", base]
+
+    if len(edit_args) > 3:
+        out = run(edit_args, capture=True).stdout.strip()
+        if out:
+            result_parts.append(out)
+
+    if draft is True:
+        out = run(["gh", "pr", "ready", "--undo"], capture=True).stdout.strip()
+        if out:
+            result_parts.append(out)
+    elif draft is False:
+        out = run(["gh", "pr", "ready"], capture=True).stdout.strip()
+        if out:
+            result_parts.append(out)
+
+    return "\n".join(result_parts) if result_parts else "PR updated."
+
+
+def update_gitlab_mr(title: str = "", body: str = "", base: str = "",
+                     draft: Optional[bool] = None) -> str:
+    """Update the open MR for the current branch on GitLab.
+
+    Uses a single ``glab mr update`` call. Requires the ``glab`` CLI.
+    """
+    if not _cmd_exists("glab"):
+        die("Install the glab CLI to update GitLab MRs: https://gitlab.com/gitlab-org/cli")
+
+    args = ["glab", "mr", "update"]
+    if title: args += ["--title", title]
+    if body:  args += ["--description", body]
+    if base:  args += ["--target-branch", base]
+    if draft is True:  args.append("--draft")
+    if draft is False: args.append("--ready")
+
+    if len(args) == 3:
+        return "Nothing to update."
+
+    return run(args, capture=True).stdout.strip() or "MR updated."
+
+
+def update_bitbucket_pr(title: str = "", body: str = "", base: str = "",
+                        draft: Optional[bool] = None) -> str:
+    """Update the open PR for the current branch on Bitbucket Server.
+
+    Finds the PR ID via ``bb pr list --json``, then calls ``bb pr update``.
+    Requires the ``bb`` CLI (bb-cli).
+    """
+    if not _cmd_exists("bb"):
+        die("Install bb (bb-cli) to update Bitbucket PRs.")
+
+    branch = current_branch()
+    raw = capture(["bb", "pr", "list", "--json"])
+    if not raw:
+        die("Could not retrieve PR list. Check bb configuration.")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        die("Could not parse bb pr list output.")
+
+    pr = next(
+        (p for p in data.get("pullRequests", []) if p.get("fromBranch") == branch),
+        None,
+    )
+    if not pr:
+        die(f"No open PR found for branch '{branch}'.")
+
+    pr_id = pr["id"]
+    project, repo = parse_bitbucket_server_path(remote_url())
+
+    args = ["bb", "pr", "update", str(pr_id)]
+    if title: args += ["--title", title]
+    if body:  args += ["--description", body]
+    if base:  args += ["--target", base]
+    if draft is True:  args.append("--draft")
+    if draft is False: args.append("--ready")
+    if project: args += ["--project", project]
+    if repo:    args += ["--repo", repo]
+
+    if len(args) == 4:  # only "bb pr update <id>" with no changes
+        return "Nothing to update."
+
+    return run(args, capture=True).stdout.strip() or "PR updated."
+
+
+def update_pr(title: str = "", body: str = "", base: str = "",
+              draft: Optional[bool] = None) -> str:
+    """Update the open PR/MR for the current branch on the auto-detected platform."""
+    rem_url = remote_url()
+    platform = detect_platform(rem_url)
+
+    if platform == "github":
+        return update_github_pr(title, body, base, draft)
+    elif platform == "gitlab":
+        return update_gitlab_mr(title, body, base, draft)
+    elif platform == "bitbucket":
+        return update_bitbucket_pr(title, body, base, draft)
+    else:
+        raise ValueError(
+            f"Unsupported platform for remote URL: {rem_url!r}. "
+            "Supported: github.com, gitlab.com, bitbucket.org / Bitbucket Server"
+        )
+
+
 # ── interactive confirmation ──────────────────────────────────────────────────
 
 def confirm(prompt: str, *, default_yes: bool = True) -> bool:
