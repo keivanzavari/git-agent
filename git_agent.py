@@ -640,9 +640,12 @@ def update_github_pr(title: str = "", body: str = "", base: str = "",
     result_parts = []
 
     edit_args = ["gh", "pr", "edit"]
-    if title: edit_args += ["--title", title]
-    if body:  edit_args += ["--body", body]
-    if base:  edit_args += ["--base", base]
+    if title:
+        edit_args += ["--title", title]
+    if body:
+        edit_args += ["--body", body]
+    if base:
+        edit_args += ["--base", base]
 
     if len(edit_args) > 3:
         out = run(edit_args, capture=True).stdout.strip()
@@ -671,11 +674,16 @@ def update_gitlab_mr(title: str = "", body: str = "", base: str = "",
         die("Install the glab CLI to update GitLab MRs: https://gitlab.com/gitlab-org/cli")
 
     args = ["glab", "mr", "update"]
-    if title: args += ["--title", title]
-    if body:  args += ["--description", body]
-    if base:  args += ["--target-branch", base]
-    if draft is True:  args.append("--draft")
-    if draft is False: args.append("--ready")
+    if title:
+        args += ["--title", title]
+    if body:
+        args += ["--description", body]
+    if base:
+        args += ["--target-branch", base]
+    if draft is True:
+        args.append("--draft")
+    if draft is False:
+        args.append("--ready")
 
     if len(args) == 3:
         return "Nothing to update."

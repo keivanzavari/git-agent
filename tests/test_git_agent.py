@@ -932,7 +932,7 @@ class TestUpdatePrDispatch:
         with patch.object(ga, "remote_url", return_value="git@gitlab.com:org/repo.git"), \
              patch.object(ga, "detect_platform", return_value="gitlab"), \
              patch.object(ga, "update_gitlab_mr", return_value="url") as mock_fn:
-            result = ga.update_pr(title="T", draft=True)
+            ga.update_pr(title="T", draft=True)
 
         mock_fn.assert_called_once_with("T", "", "", True)
 
@@ -940,7 +940,7 @@ class TestUpdatePrDispatch:
         with patch.object(ga, "remote_url", return_value="git@bitbucket.org:org/repo.git"), \
              patch.object(ga, "detect_platform", return_value="bitbucket"), \
              patch.object(ga, "update_bitbucket_pr", return_value="url") as mock_fn:
-            result = ga.update_pr(body="New body")
+            ga.update_pr(body="New body")
 
         mock_fn.assert_called_once_with("", "New body", "", None)
 
