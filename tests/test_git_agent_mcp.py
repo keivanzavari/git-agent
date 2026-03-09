@@ -316,3 +316,35 @@ class TestGetPrComments:
              patch.object(ga, "detect_platform", return_value="unknown"):
             with pytest.raises(ValueError, match="Unsupported platform"):
                 git_agent_mcp.get_pr_comments()
+
+
+# ===========================================================================
+# update_pr
+# ===========================================================================
+class TestUpdatePr:
+    def test_delegates_to_ga_update_pr_with_all_args(self):
+        with patch.object(ga, "update_pr", return_value="https://github.com/org/repo/pull/1") as mock_fn:
+            result = git_agent_mcp.update_pr(title="New title", body="New body",
+                                             base="develop", draft=False)
+
+        mock_fn.assert_called_once_with("New title", "New body", "develop", False)
+        assert result == "https://github.com/org/repo/pull/1"
+
+    def test_default_args_passed_through(self):
+        with patch.object(ga, "update_pr", return_value="PR updated.") as mock_fn:
+            git_agent_mcp.update_pr()
+
+        mock_fn.assert_called_once_with("", "", "", None)
+
+    def test_draft_true_passed_through(self):
+        with patch.object(ga, "update_pr", return_value="PR updated.") as mock_fn:
+            git_agent_mcp.update_pr(draft=True)
+
+        _, _, _, draft_arg = mock_fn.call_args[0]
+        assert draft_arg is True
+
+    def test_unsupported_platform_raises_value_error(self):
+        with patch.object(ga, "remote_url", return_value="https://codeberg.org/org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="unknown"):
+            with pytest.raises(ValueError, match="Unsupported platform"):
+                git_agent_mcp.update_pr(title="T")

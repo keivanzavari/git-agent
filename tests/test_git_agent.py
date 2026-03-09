@@ -125,6 +125,22 @@ class TestDetectPlatform:
     def test_platforms(self, url, expected):
         assert ga.detect_platform(url) == expected
 
+    def test_bitbucket_server_detected_via_env(self, monkeypatch):
+        monkeypatch.setenv("BITBUCKET_SERVER_URL", "https://bitbucket.mycompany.com")
+        assert ga.detect_platform("git@bitbucket.mycompany.com:PROJECT/repo.git") == "bitbucket"
+
+    def test_bitbucket_server_https_detected_via_env(self, monkeypatch):
+        monkeypatch.setenv("BITBUCKET_SERVER_URL", "https://bitbucket.mycompany.com")
+        assert ga.detect_platform("https://bitbucket.mycompany.com/scm/PROJECT/repo.git") == "bitbucket"
+
+    def test_non_matching_server_url_stays_unknown(self, monkeypatch):
+        monkeypatch.setenv("BITBUCKET_SERVER_URL", "https://bitbucket.mycompany.com")
+        assert ga.detect_platform("https://other-host.com/org/repo.git") == "unknown"
+
+    def test_no_env_var_non_bitbucket_stays_unknown(self, monkeypatch):
+        monkeypatch.delenv("BITBUCKET_SERVER_URL", raising=False)
+        assert ga.detect_platform("https://bitbucket.mycompany.com/scm/P/r.git") == "unknown"
+
 
 # ===========================================================================
 # parse_remote_path
@@ -148,6 +164,33 @@ class TestParseRemotePath:
     def test_gitlab_subgroup_preserved(self):
         url = "git@gitlab.com:company/platform/service.git"
         assert ga.parse_remote_path(url) == "company/platform/service"
+
+
+# ===========================================================================
+# parse_bitbucket_server_path
+# ===========================================================================
+class TestParseBitbucketServerPath:
+    @pytest.mark.parametrize("url,expected_project,expected_repo", [
+        # SCP-like SSH
+        ("git@bitbucket.mycompany.com:PROJECT/my-repo.git", "PROJECT", "my-repo"),
+        # SSH URI with port
+        ("ssh://git@bitbucket.mycompany.com:7999/PROJECT/my-repo.git", "PROJECT", "my-repo"),
+        # HTTPS with scm/ prefix (standard Bitbucket Server)
+        ("https://bitbucket.mycompany.com/scm/PROJECT/my-repo.git", "PROJECT", "my-repo"),
+        # HTTPS without scm/ prefix
+        ("https://bitbucket.mycompany.com/PROJECT/my-repo.git", "PROJECT", "my-repo"),
+        # Uppercase SCM prefix
+        ("https://bitbucket.mycompany.com/SCM/MYPROJ/repo.git", "MYPROJ", "repo"),
+    ])
+    def test_extracts_project_and_repo(self, url, expected_project, expected_repo):
+        project, repo = ga.parse_bitbucket_server_path(url)
+        assert project == expected_project
+        assert repo == expected_repo
+
+    def test_returns_empty_strings_for_unrecognised_url(self):
+        project, repo = ga.parse_bitbucket_server_path("not-a-url")
+        assert project == ""
+        assert repo == ""
 
 
 # ===========================================================================
@@ -276,48 +319,111 @@ class TestCreateGitlabMr:
 # create_bitbucket_pr
 # ===========================================================================
 class TestCreateBitbucketPr:
-    def test_uses_bkt_cli(self):
-        with patch.object(ga, "_cmd_exists", return_value=True), \
-             patch.object(ga, "run") as mock_run:
-            mock_run.return_value = SimpleNamespace(stdout="https://bitbucket.org/org/repo/pull-requests/1\n")
-            url = ga.create_bitbucket_pr("Title", "Body", "feature/x", "main", False)
-        assert url == "https://bitbucket.org/org/repo/pull-requests/1"
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "bkt"
-        assert "--source" in cmd
-        assert "--target" in cmd
+    # ── bb-cli (preferred) ──────────────────────────────────────────────────
 
-    def test_bkt_cmd_structure(self):
-        with patch.object(ga, "_cmd_exists", return_value=True), \
+    def test_prefers_bb_over_bkt(self):
+        """When bb is available it is used and bkt is never called."""
+        def cmd_exists(name):
+            return name == "bb"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
+             patch.object(ga, "remote_url", return_value="git@bitbucket.mycompany.com:PROJ/repo.git"), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="https://bb.example.com/projects/PROJ/repos/repo/pull-requests/1\n")
+            url = ga.create_bitbucket_pr("Title", "Body", "feature/x", "main", False)
+
+        assert url == "https://bb.example.com/projects/PROJ/repos/repo/pull-requests/1"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "bb"
+
+    def test_bb_cmd_passes_title_description_source_target(self):
+        def cmd_exists(name):
+            return name == "bb"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
+             patch.object(ga, "remote_url", return_value="git@bb.myco.com:PROJ/repo.git"), \
              patch.object(ga, "run") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="url\n")
-            ga.create_bitbucket_pr("My PR", "Body", "feature/x", "main", False)
-        cmd = mock_run.call_args[0][0]
-        assert cmd == ["bkt", "pr", "create",
-                       "--title", "My PR", "--source", "feature/x", "--target", "main"]
+            ga.create_bitbucket_pr("My PR", "Some body", "feature/x", "main", False)
 
-    def test_draft_warns_and_creates_anyway(self):
-        with patch.object(ga, "_cmd_exists", return_value=True), \
+        cmd = mock_run.call_args[0][0]
+        assert "--title" in cmd and cmd[cmd.index("--title") + 1] == "My PR"
+        assert "--description" in cmd and cmd[cmd.index("--description") + 1] == "Some body"
+        assert "--source" in cmd and cmd[cmd.index("--source") + 1] == "feature/x"
+        assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "main"
+        assert "--draft" not in cmd
+
+    def test_bb_cmd_includes_project_and_repo(self):
+        def cmd_exists(name):
+            return name == "bb"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
+             patch.object(ga, "remote_url", return_value="https://bb.myco.com/scm/MYPROJ/myrepo.git"), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.create_bitbucket_pr("T", "B", "feat", "main", False)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--project" in cmd and cmd[cmd.index("--project") + 1] == "MYPROJ"
+        assert "--repo" in cmd and cmd[cmd.index("--repo") + 1] == "myrepo"
+
+    def test_bb_cmd_adds_draft_flag(self):
+        def cmd_exists(name):
+            return name == "bb"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
+             patch.object(ga, "remote_url", return_value="git@bb.myco.com:P/r.git"), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.create_bitbucket_pr("T", "B", "feat", "main", True)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--draft" in cmd
+
+    # ── bkt fallback ────────────────────────────────────────────────────────
+
+    def test_falls_back_to_bkt_when_bb_absent(self):
+        def cmd_exists(name):
+            return name == "bkt"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="https://bitbucket.org/org/repo/pull-requests/1\n")
+            url = ga.create_bitbucket_pr("Title", "", "feature/x", "main", False)
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "bkt"
+        assert url == "https://bitbucket.org/org/repo/pull-requests/1"
+
+    def test_bkt_draft_warns_and_creates_anyway(self):
+        def cmd_exists(name):
+            return name == "bkt"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
              patch.object(ga, "run") as mock_run, \
              patch.object(ga, "warn") as mock_warn:
             mock_run.return_value = SimpleNamespace(stdout="url\n")
             ga.create_bitbucket_pr("Title", "", "feature/x", "main", True)
-        # draft warning should be emitted
+
         warn_messages = [c[0][0].lower() for c in mock_warn.call_args_list]
         assert any("draft" in m for m in warn_messages)
         mock_run.assert_called_once()
 
-    def test_pr_body_warns_and_creates_anyway(self):
-        with patch.object(ga, "_cmd_exists", return_value=True), \
+    def test_bkt_pr_body_warns_and_creates_anyway(self):
+        def cmd_exists(name):
+            return name == "bkt"
+
+        with patch.object(ga, "_cmd_exists", side_effect=cmd_exists), \
              patch.object(ga, "run") as mock_run, \
              patch.object(ga, "warn") as mock_warn:
             mock_run.return_value = SimpleNamespace(stdout="url\n")
             ga.create_bitbucket_pr("Title", "Some body text", "feature/x", "main", False)
+
         warn_messages = [c[0][0].lower() for c in mock_warn.call_args_list]
         assert any("description" in m for m in warn_messages)
         mock_run.assert_called_once()
 
-    def test_dies_without_bkt(self):
+    def test_dies_without_bb_or_bkt(self):
         with patch.object(ga, "_cmd_exists", return_value=False), \
              pytest.raises(SystemExit):
             ga.create_bitbucket_pr("T", "B", "feat/x", "main", False)
@@ -502,10 +608,344 @@ class TestGetGitlabMrComments:
 # get_bitbucket_pr_comments
 # ===========================================================================
 class TestGetBitbucketPrComments:
-    def test_warns_and_returns_empty(self):
-        with patch.object(ga, "warn") as mock_warn:
+    _pr_list_json = json.dumps({
+        "pullRequests": [
+            {"id": 7, "fromBranch": "feature/AUTH-42/sso", "toBranch": "main"},
+        ],
+        "totalCount": 1,
+        "pagination": {"isLastPage": True}
+    })
+
+    _comments_json = json.dumps({
+        "values": [
+            {
+                "id": 1,
+                "text": "Please add tests",
+                "author": {"displayName": "Alice", "name": "alice"},
+                "createdDate": 1700000000000,
+                "state": "OPEN",
+                "deleted": False,
+            },
+            {
+                "id": 2,
+                "text": "",          # empty — should be skipped
+                "author": {"displayName": "Bob"},
+                "createdDate": 1700000001000,
+                "state": "OPEN",
+                "deleted": False,
+            },
+            {
+                "id": 3,
+                "text": "Deleted comment",
+                "author": {"displayName": "Carol"},
+                "createdDate": 1700000002000,
+                "state": "OPEN",
+                "deleted": True,    # deleted — should be skipped
+            },
+        ]
+    })
+
+    def test_returns_comments_for_current_branch(self):
+        def fake_capture(cmd, **kwargs):
+            if "list" in cmd:
+                return self._pr_list_json
+            if "comments" in cmd:
+                return self._comments_json
+            return ""
+
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "capture", side_effect=fake_capture):
+            result = ga.get_bitbucket_pr_comments()
+
+        assert result["pr_number"] == 7
+        assert len(result["comments"]) == 1
+        assert result["comments"][0]["author"] == "Alice"
+        assert result["comments"][0]["body"] == "Please add tests"
+        assert result["comments"][0]["state"] == "OPEN"
+
+    def test_empty_and_deleted_comments_are_skipped(self):
+        def fake_capture(cmd, **kwargs):
+            if "list" in cmd:
+                return self._pr_list_json
+            if "comments" in cmd:
+                return self._comments_json
+            return ""
+
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "capture", side_effect=fake_capture):
+            result = ga.get_bitbucket_pr_comments()
+
+        authors = [c["author"] for c in result["comments"]]
+        assert "Bob" not in authors    # empty text
+        assert "Carol" not in authors  # deleted
+
+    def test_no_pr_for_branch_returns_empty(self):
+        pr_list = json.dumps({"pullRequests": [], "totalCount": 0})
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="main"), \
+             patch.object(ga, "capture", return_value=pr_list):
+            result = ga.get_bitbucket_pr_comments()
+
+        assert result == {"pr_number": None, "comments": []}
+
+    def test_warns_and_returns_empty_when_bb_not_installed(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             patch.object(ga, "warn") as mock_warn:
             result = ga.get_bitbucket_pr_comments()
 
         assert result == {"pr_number": None, "comments": []}
         mock_warn.assert_called_once()
-        assert "bkt" in mock_warn.call_args[0][0].lower()
+        assert "bb" in mock_warn.call_args[0][0].lower()
+
+    def test_pr_list_command_used_before_comments(self):
+        captured_cmds = []
+
+        def fake_capture(cmd, **kwargs):
+            captured_cmds.append(cmd)
+            if "list" in cmd:
+                return self._pr_list_json
+            if "comments" in cmd:
+                return self._comments_json
+            return ""
+
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "capture", side_effect=fake_capture):
+            ga.get_bitbucket_pr_comments()
+
+        assert any("list" in cmd for cmd in captured_cmds)
+        assert any("comments" in cmd for cmd in captured_cmds)
+
+
+# ===========================================================================
+# update_github_pr
+# ===========================================================================
+class TestUpdateGithubPr:
+    def test_edit_title_and_body(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="https://github.com/org/repo/pull/1\n")
+            ga.update_github_pr(title="New title", body="New body")
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0:3] == ["gh", "pr", "edit"]
+        assert "--title" in cmd and cmd[cmd.index("--title") + 1] == "New title"
+        assert "--body"  in cmd and cmd[cmd.index("--body")  + 1] == "New body"
+
+    def test_edit_base_branch(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_github_pr(base="release/v2")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--base" in cmd and cmd[cmd.index("--base") + 1] == "release/v2"
+
+    def test_draft_true_calls_ready_undo(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_github_pr(draft=True)
+
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert ["gh", "pr", "ready", "--undo"] in cmds
+
+    def test_draft_false_calls_ready(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_github_pr(draft=False)
+
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert ["gh", "pr", "ready"] in cmds
+
+    def test_draft_none_does_not_call_ready(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_github_pr(title="T", draft=None)
+
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert not any("ready" in cmd for cmd in cmds)
+
+    def test_no_edit_call_when_only_draft_changes(self):
+        """gh pr edit should not be called when only draft is being toggled."""
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_github_pr(draft=False)
+
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert not any(cmd[:3] == ["gh", "pr", "edit"] for cmd in cmds)
+
+    def test_dies_without_gh(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             pytest.raises(SystemExit):
+            ga.update_github_pr(title="T")
+
+
+# ===========================================================================
+# update_gitlab_mr
+# ===========================================================================
+class TestUpdateGitlabMr:
+    def test_single_call_with_all_fields(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_gitlab_mr(title="T", body="B", base="develop")
+
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0:3] == ["glab", "mr", "update"]
+        assert "--title"         in cmd and cmd[cmd.index("--title")         + 1] == "T"
+        assert "--description"   in cmd and cmd[cmd.index("--description")   + 1] == "B"
+        assert "--target-branch" in cmd and cmd[cmd.index("--target-branch") + 1] == "develop"
+
+    def test_draft_true_adds_draft_flag(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_gitlab_mr(title="T", draft=True)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--draft" in cmd
+        assert "--ready" not in cmd
+
+    def test_draft_false_adds_ready_flag(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_gitlab_mr(title="T", draft=False)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--ready" in cmd
+        assert "--draft" not in cmd
+
+    def test_nothing_to_update_when_no_fields(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "run") as mock_run:
+            result = ga.update_gitlab_mr()
+
+        mock_run.assert_not_called()
+        assert "Nothing" in result
+
+    def test_dies_without_glab(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             pytest.raises(SystemExit):
+            ga.update_gitlab_mr(title="T")
+
+
+# ===========================================================================
+# update_bitbucket_pr
+# ===========================================================================
+class TestUpdateBitbucketPr:
+    _pr_list_json = json.dumps({
+        "pullRequests": [
+            {"id": 7, "fromBranch": "feature/AUTH-42/sso", "toBranch": "main"},
+        ],
+        "totalCount": 1,
+    })
+
+    def test_finds_pr_by_branch_and_calls_update(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "remote_url", return_value="git@bb.myco.com:PROJ/repo.git"), \
+             patch.object(ga, "capture", return_value=self._pr_list_json), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="https://bb.myco.com/projects/PROJ/repos/repo/pull-requests/7\n")
+            ga.update_bitbucket_pr(title="New title")
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0:4] == ["bb", "pr", "update", "7"]
+        assert "--title" in cmd and cmd[cmd.index("--title") + 1] == "New title"
+
+    def test_passes_project_and_repo(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "remote_url", return_value="https://bb.myco.com/scm/MYPROJ/myrepo.git"), \
+             patch.object(ga, "capture", return_value=self._pr_list_json), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_bitbucket_pr(title="T")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--project" in cmd and cmd[cmd.index("--project") + 1] == "MYPROJ"
+        assert "--repo"    in cmd and cmd[cmd.index("--repo")    + 1] == "myrepo"
+
+    def test_draft_true_passes_draft_flag(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "remote_url", return_value="git@bb.myco.com:P/r.git"), \
+             patch.object(ga, "capture", return_value=self._pr_list_json), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_bitbucket_pr(draft=True)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--draft" in cmd
+        assert "--ready" not in cmd
+
+    def test_draft_false_passes_ready_flag(self):
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="feature/AUTH-42/sso"), \
+             patch.object(ga, "remote_url", return_value="git@bb.myco.com:P/r.git"), \
+             patch.object(ga, "capture", return_value=self._pr_list_json), \
+             patch.object(ga, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(stdout="url\n")
+            ga.update_bitbucket_pr(draft=False)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--ready" in cmd
+        assert "--draft" not in cmd
+
+    def test_dies_when_no_pr_found_for_branch(self):
+        empty_list = json.dumps({"pullRequests": [], "totalCount": 0})
+        with patch.object(ga, "_cmd_exists", return_value=True), \
+             patch.object(ga, "current_branch", return_value="main"), \
+             patch.object(ga, "remote_url", return_value="git@bb.myco.com:P/r.git"), \
+             patch.object(ga, "capture", return_value=empty_list), \
+             pytest.raises(SystemExit):
+            ga.update_bitbucket_pr(title="T")
+
+    def test_dies_without_bb(self):
+        with patch.object(ga, "_cmd_exists", return_value=False), \
+             pytest.raises(SystemExit):
+            ga.update_bitbucket_pr(title="T")
+
+
+# ===========================================================================
+# update_pr dispatch
+# ===========================================================================
+class TestUpdatePrDispatch:
+    def test_github_dispatches_to_github_fn(self):
+        with patch.object(ga, "remote_url", return_value="git@github.com:org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="github"), \
+             patch.object(ga, "update_github_pr", return_value="url") as mock_fn:
+            result = ga.update_pr(title="T", body="B", base="main", draft=False)
+
+        mock_fn.assert_called_once_with("T", "B", "main", False)
+        assert result == "url"
+
+    def test_gitlab_dispatches_to_gitlab_fn(self):
+        with patch.object(ga, "remote_url", return_value="git@gitlab.com:org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="gitlab"), \
+             patch.object(ga, "update_gitlab_mr", return_value="url") as mock_fn:
+            ga.update_pr(title="T", draft=True)
+
+        mock_fn.assert_called_once_with("T", "", "", True)
+
+    def test_bitbucket_dispatches_to_bitbucket_fn(self):
+        with patch.object(ga, "remote_url", return_value="git@bitbucket.org:org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="bitbucket"), \
+             patch.object(ga, "update_bitbucket_pr", return_value="url") as mock_fn:
+            ga.update_pr(body="New body")
+
+        mock_fn.assert_called_once_with("", "New body", "", None)
+
+    def test_unsupported_platform_raises(self):
+        with patch.object(ga, "remote_url", return_value="https://codeberg.org/org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="unknown"):
+            with pytest.raises(ValueError, match="Unsupported platform"):
+                ga.update_pr(title="T")

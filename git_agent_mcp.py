@@ -11,6 +11,7 @@ Usage:
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Ensure git_agent.py is importable regardless of cwd
 sys.path.insert(0, str(Path(__file__).parent))
@@ -141,7 +142,7 @@ def get_pr_comments() -> dict:
     'author', 'body', 'created_at', 'state').
 
     Useful for agents that need to read reviewer feedback and address it.
-    Bitbucket is supported but returns an empty list (bkt has no comment API).
+    Bitbucket is fully supported via bb-cli (``bb pr comments``).
     """
     rem_url = ga.remote_url()
     platform = ga.detect_platform(rem_url)
@@ -157,6 +158,28 @@ def get_pr_comments() -> dict:
             f"Unsupported platform for remote URL: {rem_url!r}. "
             "Supported: github.com, gitlab.com, bitbucket.org"
         )
+
+
+@mcp_server.tool()
+def update_pr(
+    title: str = "",
+    body: str = "",
+    base: str = "",
+    draft: Optional[bool] = None,
+) -> str:
+    """Update an existing PR/MR on the current branch.
+
+    Supports GitHub (gh pr edit / gh pr ready), GitLab (glab mr update),
+    and Bitbucket Server (bb pr update). Only pass the fields you want to
+    change — omitted or empty fields are left untouched.
+
+    Args:
+        title: New PR/MR title. Pass empty string to leave unchanged.
+        body:  New PR/MR description/body. Pass empty string to leave unchanged.
+        base:  New base/target branch. Pass empty string to leave unchanged.
+        draft: True → convert to draft. False → mark ready. None → leave unchanged.
+    """
+    return ga.update_pr(title, body, base, draft)
 
 
 if __name__ == "__main__":

@@ -121,15 +121,23 @@ export TICKET_URL_TEMPLATE=https://yourorg.atlassian.net/browse/{id}  # Jira
 |---|---|---|
 | GitHub | `gh` | https://cli.github.com |
 | GitLab | `glab` | https://gitlab.com/gitlab-org/cli |
-| Bitbucket | `bkt` | `brew install avivsinai/tap/bitbucket-cli` |
+| Bitbucket Server/DC | `bb` (preferred) | https://github.com/keivanzavari/bb-cli |
+| Bitbucket Cloud | `bkt` (fallback) | `brew install avivsinai/tap/bitbucket-cli` |
 
-The platform is auto-detected from `git remote get-url origin`. Each CLI handles its
-own authentication — run once to set up credentials:
+The platform is auto-detected from `git remote get-url origin`. For self-hosted
+Bitbucket Server instances set `BITBUCKET_SERVER_URL` so the hostname can be matched:
 
 ```bash
-gh auth login                                                   # GitHub
-glab auth login                                                 # GitLab
-bkt auth login https://bitbucket.org --kind cloud --web        # Bitbucket Cloud
+export BITBUCKET_SERVER_URL=https://bitbucket.yourcompany.com
+export BITBUCKET_TOKEN=your-http-access-token   # Personal Settings → HTTP access tokens
+```
+
+Each CLI handles its own authentication — run once to set up credentials:
+
+```bash
+gh auth login          # GitHub
+glab auth login        # GitLab
+# bb uses BITBUCKET_SERVER_URL + BITBUCKET_TOKEN env vars (see above)
 ```
 
 Commits and pushes work without any CLI installed.
@@ -175,6 +183,7 @@ any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code
 | `commit` | Commit staged changes (optionally push) |
 | `create_pr` | Open a PR/MR on GitHub, GitLab, or Bitbucket |
 | `get_pr_comments` | Fetch reviewer comments and reviews on the open PR/MR for the current branch |
+| `update_pr` | Update the title, description, base branch, or draft status of the open PR/MR |
 
 ### Example Copilot agent prompts
 
@@ -183,6 +192,7 @@ any MCP-compatible client — including **GitHub Copilot agent mode** in VS Code
 - "Commit and push with message: Fix null pointer in auth" → calls `commit`
 - "Open a draft PR against develop" → calls `create_pr`
 - "What are the review comments on my PR?" → calls `get_pr_comments`
+- "Update the PR title to include the ticket number" → calls `update_pr`
 
 ## Using with AI agents
 
@@ -208,9 +218,10 @@ Requires `pytest` — see `requirements-dev.txt`.
 
 - Python 3.9+
 - `git`
-- `gh` CLI (optional — required only for GitHub PR creation)
-- `glab` CLI (optional — required only for GitLab MR creation)
-- `bkt` CLI (optional — required only for Bitbucket PR creation)
+- `gh` CLI (optional — required only for GitHub PR creation/update)
+- `glab` CLI (optional — required only for GitLab MR creation/update)
+- `bb` CLI (optional — preferred for Bitbucket Server/DC PR creation/update/comments)
+- `bkt` CLI (optional — fallback for Bitbucket when `bb` is not installed)
 
 `git_agent.py` is stdlib-only (no pip install needed for the CLI).
 The MCP server (`git_agent_mcp.py`) additionally requires `mcp>=1.2.0` — see `requirements.txt`.
