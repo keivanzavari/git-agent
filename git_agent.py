@@ -813,7 +813,7 @@ def _help_text() -> str:
 # ── interactive confirmation ──────────────────────────────────────────────────
 
 def confirm(prompt: str, *, default_yes: bool = True) -> bool:
-    hint = "[Y/n]" if default_yes else "[y/N]"
+    hint = _c("2", "[Y/n]" if default_yes else "[y/N]")
     ans = input(f"{prompt} {hint} ").strip().lower()
     if ans == "":
         return default_yes
@@ -898,6 +898,7 @@ class GitConsole:
             subprocess.run(["git", "add", "-p"])
         stat = diff_stat()
         if stat:
+            print(_c("2", "Staged:"))
             print(stat)
 
     def _cmd_commit(self, message: str) -> None:
@@ -917,12 +918,16 @@ class GitConsole:
             log = recent_log()
             commit_msg = generate_commit_msg(ticket_id, branch, log, stat, diff, "")
 
-        header("Proposed commit message:")
-        print()
+        n = len(files)
+        print(_c("2", f"\n{n} file{'s' if n != 1 else ''} staged:  ") +
+              _c("96", "  ".join(files[:4])) +
+              (_c("2", f"  … +{n - 4} more") if n > 4 else ""))
+        rule = _c("2", "─" * 52)
+        print(rule)
         print(commit_msg)
-        print()
+        print(rule)
 
-        ans = input("Commit with this message? [Y/n/edit] ").strip().lower()
+        ans = input(_c("2", "commit? ") + "[Y/n/edit] ").strip().lower()
         if ans in ("n", "no"):
             info("Aborted.")
             return
@@ -992,14 +997,15 @@ class GitConsole:
         header("Generating PR body...")
         pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, "")
 
-        header("Proposed PR:")
-        print(f"  Title : {pr_title}")
-        print(f"  Base  : {base} ← {branch}")
-        print()
+        rule = _c("2", "─" * 52)
+        print(f"\n{rule}")
+        print(f"  {_c('2', 'title')}  {pr_title}")
+        print(f"  {_c('2', 'base ')}  {_c('2', base)} ← {_c('96', branch)}")
+        print(rule)
         print(pr_body)
-        print()
+        print(rule)
 
-        ans = input("[Y/n/edit title/edit body] ").strip().lower()
+        ans = input(_c("2", "create? ") + "[Y/n/edit title/edit body] ").strip().lower()
         if ans in ("n", "no"):
             info("Aborted.")
             return
@@ -1067,11 +1073,12 @@ class GitConsole:
         header("Generating PR body...")
         pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, "")
 
-        header("Proposed PR update:")
-        print(f"  Title : {pr_title}")
-        print()
+        rule = _c("2", "─" * 52)
+        print(f"\n{rule}")
+        print(f"  {_c('2', 'title')}  {pr_title}")
+        print(rule)
         print(pr_body)
-        print()
+        print(rule)
 
         if not confirm("Update PR with this content?"):
             info("Aborted.")
