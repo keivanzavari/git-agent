@@ -793,15 +793,21 @@ except ImportError:
 
 HISTORY_PATH = os.path.expanduser("~/.git_agent_history")
 
-HELP_TEXT = """\
-Built-in commands:
-  add [args]      Stage files (no args → interactive patch via git add -p)
-  commit [msg]    Commit staged changes; LLM-generated message if none given
-  create          Create a PR/MR for the current branch
-  update          Update the open PR/MR for the current branch
-  git <cmd>       Pass any git subcommand through (e.g. git log --oneline -5)
-  help            Show this help
-  exit / quit     Exit the console (also Ctrl-D)"""
+def _help_text() -> str:
+    def cmd(name: str, desc: str) -> str:
+        return f"  {_c('96', name):<28}{_c('2', desc)}"
+
+    lines = [
+        _c("1", "Commands:"),
+        cmd("add [args]",      "stage files  (no args → interactive patch via git add -p)"),
+        cmd("commit [msg]",    "commit staged changes  (LLM-generated message if none given)"),
+        cmd("create",          "create a PR/MR for the current branch"),
+        cmd("update",          "update the open PR/MR for the current branch"),
+        cmd("git <subcommand>","pass any git subcommand through  (e.g. git log --oneline -5)"),
+        cmd("help",            "show this help"),
+        cmd("exit / quit",     "exit the console  (also Ctrl-D)"),
+    ]
+    return "\n".join(lines)
 
 
 # ── interactive confirmation ──────────────────────────────────────────────────
@@ -841,7 +847,11 @@ class GitConsole:
 
     def run(self) -> None:
         self._running = True
-        info("git-agent console  (type 'help' for commands, Ctrl-D to exit)")
+        rule = _c("2", "─" * 44)
+        print(rule)
+        print(f"  {_c('1;36', 'git-agent')} console"
+              f"  {_c('2', '·  type help  ·  Ctrl-D to exit')}")
+        print(rule)
         while self._running:
             self._branch = current_branch()
             try:
@@ -867,7 +877,7 @@ class GitConsole:
         if cmd in ("exit", "quit"):
             self._running = False
         elif cmd == "help":
-            print(HELP_TEXT)
+            print(_help_text())
         elif cmd == "add":
             self._cmd_add(rest)
         elif cmd == "commit":
