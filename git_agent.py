@@ -22,6 +22,13 @@ from typing import Optional
 
 VERSION = "0.3.0"
 
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()  # loads .env from cwd or any parent directory; existing vars are not overwritten
+except ImportError:
+    pass  # python-dotenv not installed — rely on environment variables set in the shell
+
 HTTP_TIMEOUT = 30
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
@@ -176,6 +183,11 @@ def recent_log(n: int = 5) -> str:
     return capture(["git", "log", "--oneline", f"-{n}"])
 
 
+def _pr_title_from_log() -> str:
+    """First line of the most recent commit subject."""
+    return capture(["git", "log", "-1", "--format=%s"])
+
+
 def default_base_branch() -> str:
     out = capture(["git", "remote", "show", "origin"])
     m = re.search(r"HEAD branch:\s*(\S+)", out)
@@ -235,7 +247,7 @@ def _http_post(url: str, payload: dict, headers: dict) -> dict:
 
 def call_anthropic(prompt: str) -> str:
     payload = {
-        "model": "claude-3-5-haiku-20241022",
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 400,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -343,7 +355,10 @@ def generate_commit_msg(ticket_id: str, branch: str, log: str,
         return edited
     else:
         warn("No LLM API key and no $EDITOR set. Enter commit message (Ctrl-D to finish):")
-        return sys.stdin.read().strip()
+        msg = sys.stdin.read().strip()
+        if not msg:
+            die("Empty commit message. Aborted.")
+        return msg
 
 
 # ── PR body generation ────────────────────────────────────────────────────────
@@ -754,6 +769,27 @@ def update_pr(title: str = "", body: str = "", base: str = "",
         )
 
 
+# ── readline + REPL setup ────────────────────────────────────────────────────
+
+try:
+    import readline as _readline
+    _READLINE_AVAILABLE = True
+except ImportError:
+    _READLINE_AVAILABLE = False
+
+HISTORY_PATH = os.path.expanduser("~/.git_agent_history")
+
+HELP_TEXT = """\
+Built-in commands:
+  add [args]      Stage files (no args → interactive patch via git add -p)
+  commit [msg]    Commit staged changes; LLM-generated message if none given
+  create          Create a PR/MR for the current branch
+  update          Update the open PR/MR for the current branch
+  git <cmd>       Pass any git subcommand through (e.g. git log --oneline -5)
+  help            Show this help
+  exit / quit     Exit the console (also Ctrl-D)"""
+
+
 # ── interactive confirmation ──────────────────────────────────────────────────
 
 def confirm(prompt: str, *, default_yes: bool = True) -> bool:
@@ -764,9 +800,255 @@ def confirm(prompt: str, *, default_yes: bool = True) -> bool:
     return ans == "y"
 
 
+# ── interactive REPL console ──────────────────────────────────────────────────
+
+class GitConsole:
+    def __init__(self) -> None:
+        self._running = False
+        self._branch: str = ""
+        if _READLINE_AVAILABLE:
+            _readline.set_completer(self._completer)
+            _readline.parse_and_bind("tab: complete")
+            try:
+                _readline.read_history_file(HISTORY_PATH)
+            except FileNotFoundError:
+                pass
+            _readline.set_history_length(500)
+
+    def _completer(self, text: str, state: int):
+        commands = ["add", "commit", "create", "update", "git", "help", "exit", "quit"]
+        matches = [c for c in commands if c.startswith(text)]
+        return matches[state] if state < len(matches) else None
+
+    @property
+    def prompt(self) -> str:
+        b = self._branch or "detached"
+        return f"({_c('36', b)}) git> "
+
+    def run(self) -> None:
+        self._running = True
+        info("git-agent console  (type 'help' for commands, Ctrl-D to exit)")
+        while self._running:
+            self._branch = current_branch()
+            try:
+                line = input(self.prompt).strip()
+            except KeyboardInterrupt:
+                print(); continue
+            except EOFError:
+                print(); break
+            if not line:
+                continue
+            try:
+                self._dispatch(line)
+            except SystemExit:
+                pass
+        if _READLINE_AVAILABLE:
+            _readline.write_history_file(HISTORY_PATH)
+        success("Goodbye.")
+
+    def _dispatch(self, line: str) -> None:
+        parts = line.split(None, 1)
+        cmd = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+        if cmd in ("exit", "quit"):
+            self._running = False
+        elif cmd == "help":
+            print(HELP_TEXT)
+        elif cmd == "add":
+            self._cmd_add(rest)
+        elif cmd == "commit":
+            self._cmd_commit(rest)
+        elif cmd == "create":
+            self._cmd_create()
+        elif cmd == "update":
+            self._cmd_update()
+        elif cmd == "git":
+            self._passthrough(rest)
+        else:
+            warn(f"Unknown command: {cmd!r}. Type 'help' for available commands.")
+
+    def _cmd_add(self, args: str) -> None:
+        if args:
+            subprocess.run(["git", "add"] + shlex.split(args))
+        else:
+            subprocess.run(["git", "add", "-p"])
+        stat = diff_stat()
+        if stat:
+            print(stat)
+
+    def _cmd_commit(self, message: str) -> None:
+        files = staged_files()
+        if not files:
+            warn("Nothing staged. Use `add` first.")
+            return
+
+        if message:
+            commit_msg = message
+        else:
+            header("Generating commit message...")
+            branch = self._branch
+            ticket_id = extract_ticket_id(branch)
+            stat = diff_stat()
+            diff = full_diff()
+            log = recent_log()
+            commit_msg = generate_commit_msg(ticket_id, branch, log, stat, diff, "")
+
+        header("Proposed commit message:")
+        print()
+        print(commit_msg)
+        print()
+
+        ans = input("Commit with this message? [Y/n/edit] ").strip().lower()
+        if ans in ("n", "no"):
+            info("Aborted.")
+            return
+        if ans in ("e", "edit"):
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", prefix="git-agent-msg-", delete=False
+            ) as tmp:
+                tmp.write(commit_msg)
+                tmp_path = tmp.name
+            try:
+                subprocess.run([*shlex.split(editor), tmp_path], check=True)
+                with open(tmp_path) as f:
+                    commit_msg = f.read().strip()
+            finally:
+                os.unlink(tmp_path)
+
+        run(["git", "commit", "-m", commit_msg])
+        success("Committed.")
+
+        if confirm(f"Push to origin/{self._branch}?"):
+            result = subprocess.run(["git", "push", "origin", "HEAD"])
+            if result.returncode != 0:
+                warn("Push failed. If the remote is ahead, run: git pull --rebase")
+                return
+            success("Pushed.")
+            if confirm("Open a PR/MR?", default_yes=False):
+                self._cmd_create()
+
+    def _cmd_create(self) -> None:
+        branch = self._branch
+        base = default_base_branch()
+        if branch == base:
+            warn(f"Current branch is the base branch ({base}). Create a feature branch first.")
+            return
+
+        unpushed = capture(["git", "log", f"origin/{branch}..HEAD", "--oneline"])
+        if unpushed:
+            info(f"Unpushed commits:\n{unpushed}")
+            if confirm("Push first?"):
+                result = subprocess.run(["git", "push", "origin", "HEAD"])
+                if result.returncode != 0:
+                    warn("Push failed.")
+                    return
+                success("Pushed.")
+
+        pr_title = _pr_title_from_log()
+        commit_msg = capture(["git", "log", "-1", "--format=%B"])
+        ticket_id = extract_ticket_id(branch)
+        url_template = resolve_ticket_url_template()
+        t_link = ticket_url(ticket_id, url_template)
+        stat = diff_stat()
+
+        header("Generating PR body...")
+        pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, "")
+
+        header("Proposed PR:")
+        print(f"  Title : {pr_title}")
+        print(f"  Base  : {base} ← {branch}")
+        print()
+        print(pr_body)
+        print()
+
+        ans = input("[Y/n/edit title/edit body] ").strip().lower()
+        if ans in ("n", "no"):
+            info("Aborted.")
+            return
+        if ans in ("edit title", "e title"):
+            pr_title = input("New title: ").strip() or pr_title
+        elif ans in ("edit body", "e body"):
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", prefix="git-agent-pr-", delete=False
+            ) as tmp:
+                tmp.write(pr_body)
+                tmp_path = tmp.name
+            try:
+                subprocess.run([*shlex.split(editor), tmp_path], check=True)
+                with open(tmp_path) as f:
+                    pr_body = f.read().strip()
+            finally:
+                os.unlink(tmp_path)
+
+        rem_url = remote_url()
+        platform = detect_platform(rem_url)
+        if platform == "github":
+            pr_url = create_github_pr(pr_title, pr_body, branch, base, False)
+        elif platform == "gitlab":
+            pr_url = create_gitlab_mr(pr_title, pr_body, branch, base, False)
+        elif platform == "bitbucket":
+            pr_url = create_bitbucket_pr(pr_title, pr_body, branch, base, False)
+        else:
+            warn(f"Unrecognised platform. Remote: {rem_url}")
+            return
+        success(f"PR created: {pr_url}")
+
+    def _cmd_update(self) -> None:
+        branch = self._branch
+
+        unpushed = capture(["git", "log", f"origin/{branch}..HEAD", "--oneline"])
+        if unpushed:
+            info(f"Unpushed commits:\n{unpushed}")
+            if confirm("Push first?"):
+                result = subprocess.run(["git", "push", "origin", "HEAD"])
+                if result.returncode != 0:
+                    warn("Push failed.")
+                    return
+                success("Pushed.")
+
+        pr_title = _pr_title_from_log()
+        commit_msg = capture(["git", "log", "-1", "--format=%B"])
+        ticket_id = extract_ticket_id(branch)
+        url_template = resolve_ticket_url_template()
+        t_link = ticket_url(ticket_id, url_template)
+        stat = diff_stat()
+
+        header("Generating PR body...")
+        pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, "")
+
+        header("Proposed PR update:")
+        print(f"  Title : {pr_title}")
+        print()
+        print(pr_body)
+        print()
+
+        if not confirm("Update PR with this content?"):
+            info("Aborted.")
+            return
+
+        result = update_pr(title=pr_title, body=pr_body)
+        success(f"PR updated: {result}")
+
+    def _passthrough(self, rest: str) -> None:
+        if not rest:
+            warn("Usage: git <subcommand>")
+            return
+        parts = shlex.split(rest)
+        subprocess.run(["git"] + parts)
+        if parts[0] in {"checkout", "switch", "rebase", "merge", "pull", "reset"}:
+            self._branch = current_branch()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    if not sys.argv[1:] and sys.stdin.isatty():
+        ensure_git_repo()
+        GitConsole().run()
+        return
+
     parser = build_parser()
     args = parser.parse_args()
 

@@ -949,3 +949,222 @@ class TestUpdatePrDispatch:
              patch.object(ga, "detect_platform", return_value="unknown"):
             with pytest.raises(ValueError, match="Unsupported platform"):
                 ga.update_pr(title="T")
+
+
+# ===========================================================================
+# _pr_title_from_log
+# ===========================================================================
+class TestPrTitleFromLog:
+    def test_returns_first_commit_subject(self):
+        with patch.object(ga, "capture", return_value="Add OAuth login"):
+            assert ga._pr_title_from_log() == "Add OAuth login"
+
+    def test_returns_empty_on_no_commits(self):
+        with patch.object(ga, "capture", return_value=""):
+            assert ga._pr_title_from_log() == ""
+
+
+# ===========================================================================
+# GitConsole._dispatch
+# ===========================================================================
+class TestGitConsoleDispatch:
+    def _make_console(self, branch="feature/TEST-1/foo"):
+        c = ga.GitConsole()
+        c._branch = branch
+        c._running = True
+        return c
+
+    def test_exit_sets_running_false(self):
+        c = self._make_console()
+        c._dispatch("exit")
+        assert c._running is False
+
+    def test_quit_sets_running_false(self):
+        c = self._make_console()
+        c._dispatch("quit")
+        assert c._running is False
+
+    def test_help_prints_output(self, capsys):
+        c = self._make_console()
+        c._dispatch("help")
+        out = capsys.readouterr().out
+        assert "add" in out
+        assert "commit" in out
+        assert "create" in out
+        assert "update" in out
+
+    def test_unknown_command_warns(self):
+        c = self._make_console()
+        with patch.object(ga, "warn") as mock_warn:
+            c._dispatch("foobar")
+        mock_warn.assert_called_once()
+        assert "foobar" in mock_warn.call_args[0][0]
+
+    def test_add_delegates_to_cmd_add(self):
+        c = self._make_console()
+        with patch.object(c, "_cmd_add") as mock_add:
+            c._dispatch("add README.md")
+        mock_add.assert_called_once_with("README.md")
+
+    def test_commit_delegates_to_cmd_commit(self):
+        c = self._make_console()
+        with patch.object(c, "_cmd_commit") as mock_commit:
+            c._dispatch("commit fix typo")
+        mock_commit.assert_called_once_with("fix typo")
+
+    def test_commit_no_args_passes_empty_string(self):
+        c = self._make_console()
+        with patch.object(c, "_cmd_commit") as mock_commit:
+            c._dispatch("commit")
+        mock_commit.assert_called_once_with("")
+
+    def test_create_delegates_to_cmd_create(self):
+        c = self._make_console()
+        with patch.object(c, "_cmd_create") as mock_create:
+            c._dispatch("create")
+        mock_create.assert_called_once_with()
+
+    def test_update_delegates_to_cmd_update(self):
+        c = self._make_console()
+        with patch.object(c, "_cmd_update") as mock_update:
+            c._dispatch("update")
+        mock_update.assert_called_once_with()
+
+    def test_git_delegates_to_passthrough(self):
+        c = self._make_console()
+        with patch.object(c, "_passthrough") as mock_pass:
+            c._dispatch("git status")
+        mock_pass.assert_called_once_with("status")
+
+    def test_git_no_subcommand_passes_empty_string(self):
+        c = self._make_console()
+        with patch.object(c, "_passthrough") as mock_pass:
+            c._dispatch("git")
+        mock_pass.assert_called_once_with("")
+
+    def test_dispatch_is_case_insensitive(self):
+        c = self._make_console()
+        c._dispatch("EXIT")
+        assert c._running is False
+
+    def test_systemexist_from_die_is_swallowed_in_run(self):
+        """die() raises SystemExit; _dispatch should propagate it (run() catches it)."""
+        c = self._make_console()
+        # _dispatch itself does NOT catch SystemExit — run() does.
+        # Verify it propagates out of _dispatch.
+        with patch.object(c, "_cmd_create", side_effect=SystemExit(1)):
+            with pytest.raises(SystemExit):
+                c._dispatch("create")
+
+
+# ===========================================================================
+# GitConsole._cmd_commit guards
+# ===========================================================================
+class TestGitConsoleCommitGuard:
+    def test_warns_when_nothing_staged(self):
+        c = ga.GitConsole()
+        c._branch = "feature/TEST-1/foo"
+        with patch.object(ga, "staged_files", return_value=[]), \
+             patch.object(ga, "warn") as mock_warn:
+            c._cmd_commit("")
+        mock_warn.assert_called_once()
+        assert "staged" in mock_warn.call_args[0][0].lower()
+
+    def test_manual_message_skips_llm(self):
+        c = ga.GitConsole()
+        c._branch = "feature/TEST-1/foo"
+        with patch.object(ga, "staged_files", return_value=["foo.py"]), \
+             patch.object(ga, "call_llm") as mock_llm, \
+             patch("builtins.input", return_value="n"):
+            c._cmd_commit("fix typo in README")
+        mock_llm.assert_not_called()
+
+    def test_llm_called_when_no_message(self):
+        c = ga.GitConsole()
+        c._branch = "feature/TEST-1/foo"
+        with patch.object(ga, "staged_files", return_value=["foo.py"]), \
+             patch.object(ga, "diff_stat", return_value="stat"), \
+             patch.object(ga, "full_diff", return_value="diff"), \
+             patch.object(ga, "recent_log", return_value="log"), \
+             patch.object(ga, "generate_commit_msg", return_value="LLM message") as mock_gen, \
+             patch("builtins.input", return_value="n"):
+            c._cmd_commit("")
+        mock_gen.assert_called_once()
+
+    def test_commit_confirmed_calls_git_commit(self):
+        c = ga.GitConsole()
+        c._branch = "feature/TEST-1/foo"
+        with patch.object(ga, "staged_files", return_value=["foo.py"]), \
+             patch.object(ga, "diff_stat", return_value="stat"), \
+             patch.object(ga, "full_diff", return_value="diff"), \
+             patch.object(ga, "recent_log", return_value="log"), \
+             patch.object(ga, "generate_commit_msg", return_value="LLM message"), \
+             patch("builtins.input", side_effect=["y", "n"]), \
+             patch.object(ga, "run") as mock_run:
+            c._cmd_commit("")
+        git_commit_calls = [c for c in mock_run.call_args_list
+                            if c[0][0][:2] == ["git", "commit"]]
+        assert len(git_commit_calls) == 1
+
+
+# ===========================================================================
+# GitConsole._cmd_create guard
+# ===========================================================================
+class TestGitConsoleCreateGuard:
+    def test_warns_when_on_base_branch(self):
+        c = ga.GitConsole()
+        c._branch = "main"
+        with patch.object(ga, "default_base_branch", return_value="main"), \
+             patch.object(ga, "warn") as mock_warn:
+            c._cmd_create()
+        mock_warn.assert_called_once()
+        assert "base branch" in mock_warn.call_args[0][0].lower()
+
+    def test_proceeds_on_feature_branch(self):
+        c = ga.GitConsole()
+        c._branch = "feature/TEST-1/foo"
+        with patch.object(ga, "default_base_branch", return_value="main"), \
+             patch.object(ga, "capture", return_value=""), \
+             patch.object(ga, "_pr_title_from_log", return_value="Add feature"), \
+             patch.object(ga, "generate_pr_body", return_value="## Summary\n- stuff"), \
+             patch.object(ga, "remote_url", return_value="git@github.com:org/repo.git"), \
+             patch.object(ga, "detect_platform", return_value="github"), \
+             patch.object(ga, "create_github_pr", return_value="https://github.com/org/repo/pull/1"), \
+             patch("builtins.input", return_value="y"):
+            c._cmd_create()
+
+
+# ===========================================================================
+# GitConsole._passthrough
+# ===========================================================================
+class TestGitConsolePassthrough:
+    def test_empty_rest_warns(self):
+        c = ga.GitConsole()
+        c._branch = "main"
+        with patch.object(ga, "warn") as mock_warn:
+            c._passthrough("")
+        mock_warn.assert_called_once()
+
+    def test_runs_git_subcommand(self):
+        c = ga.GitConsole()
+        c._branch = "main"
+        with patch("subprocess.run") as mock_run:
+            c._passthrough("status")
+        mock_run.assert_called_once_with(["git", "status"])
+
+    def test_refreshes_branch_after_checkout(self):
+        c = ga.GitConsole()
+        c._branch = "main"
+        with patch("subprocess.run"), \
+             patch.object(ga, "current_branch", return_value="develop") as mock_branch:
+            c._passthrough("checkout develop")
+        mock_branch.assert_called_once()
+        assert c._branch == "develop"
+
+    def test_no_branch_refresh_for_status(self):
+        c = ga.GitConsole()
+        c._branch = "main"
+        with patch("subprocess.run"), \
+             patch.object(ga, "current_branch") as mock_branch:
+            c._passthrough("status")
+        mock_branch.assert_not_called()
