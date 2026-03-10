@@ -422,17 +422,31 @@ def generate_pr_body(ticket_id: str, ticket_link: str, commit_msg: str,
 # ── platform detection & PR creation ─────────────────────────────────────────
 
 def detect_platform(url: str) -> str:
-    if "github" in url:
+    # Extract the host first so path components (e.g. a repo named "github-tools")
+    # don't cause false positives.  SSH aliases like "github-personal" still match
+    # because "github" appears in the alias name itself.
+    if url.startswith(("http://", "https://", "ssh://")):
+        host = urllib.parse.urlparse(url).hostname or ""
+    else:
+        # SCP-style:  git@host:path  or  host:path
+        m = re.match(r"(?:[^@]+@)?([^:/]+)[:/]", url)
+        host = m.group(1) if m else ""
+
+    # github/gitlab: substring match on the host so SSH aliases like
+    # "github-personal" or "gitlab-work" still resolve correctly.
+    if "github" in host:
         return "github"
-    if "gitlab" in url:
+    if "gitlab" in host:
         return "gitlab"
-    if "bitbucket" in url:
+    # Bitbucket Cloud: exact domain match only (self-hosted needs BITBUCKET_SERVER_URL).
+    if host == "bitbucket.org" or host.endswith(".bitbucket.org"):
         return "bitbucket"
-    # Bitbucket Server: check if the remote URL hostname matches BITBUCKET_SERVER_URL
+
+    # Bitbucket Server: compare parsed hostnames exactly
     server_url = os.environ.get("BITBUCKET_SERVER_URL", "")
     if server_url:
         server_host = urllib.parse.urlparse(server_url).hostname or ""
-        if server_host and server_host in url:
+        if server_host and host == server_host:
             return "bitbucket"
     return "unknown"
 
@@ -935,22 +949,35 @@ class GitConsole:
             warn(f"Current branch is the base branch ({base}). Create a feature branch first.")
             return
 
-        unpushed = capture(["git", "log", f"origin/{branch}..HEAD", "--oneline"])
-        if unpushed:
-            info(f"Unpushed commits:\n{unpushed}")
+        # A missing origin ref should be treated as "needs push", not "all pushed".
+        origin_ref = capture(["git", "rev-parse", "--verify", f"origin/{branch}"])
+        if not origin_ref:
+            info("Branch has no remote tracking ref yet.")
             if confirm("Push first?"):
                 result = subprocess.run(["git", "push", "origin", "HEAD"])
                 if result.returncode != 0:
                     warn("Push failed.")
                     return
                 success("Pushed.")
+        else:
+            unpushed = capture(["git", "log", f"origin/{branch}..HEAD", "--oneline"])
+            if unpushed:
+                info(f"Unpushed commits:\n{unpushed}")
+                if confirm("Push first?"):
+                    result = subprocess.run(["git", "push", "origin", "HEAD"])
+                    if result.returncode != 0:
+                        warn("Push failed.")
+                        return
+                    success("Pushed.")
 
         pr_title = _pr_title_from_log()
         commit_msg = capture(["git", "log", "-1", "--format=%B"])
         ticket_id = extract_ticket_id(branch)
         url_template = resolve_ticket_url_template()
         t_link = ticket_url(ticket_id, url_template)
-        stat = diff_stat()
+        # Use the diff against the base branch, not the index (staged files).
+        stat = capture(["git", "diff", "--stat", f"origin/{base}..HEAD"]) \
+            or capture(["git", "diff", "--stat", f"{base}..HEAD"])
 
         header("Generating PR body...")
         pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, "")
@@ -997,23 +1024,35 @@ class GitConsole:
 
     def _cmd_update(self) -> None:
         branch = self._branch
+        base = default_base_branch()
 
-        unpushed = capture(["git", "log", f"origin/{branch}..HEAD", "--oneline"])
-        if unpushed:
-            info(f"Unpushed commits:\n{unpushed}")
+        origin_ref = capture(["git", "rev-parse", "--verify", f"origin/{branch}"])
+        if not origin_ref:
+            info("Branch has no remote tracking ref yet.")
             if confirm("Push first?"):
                 result = subprocess.run(["git", "push", "origin", "HEAD"])
                 if result.returncode != 0:
                     warn("Push failed.")
                     return
                 success("Pushed.")
+        else:
+            unpushed = capture(["git", "log", f"origin/{branch}..HEAD", "--oneline"])
+            if unpushed:
+                info(f"Unpushed commits:\n{unpushed}")
+                if confirm("Push first?"):
+                    result = subprocess.run(["git", "push", "origin", "HEAD"])
+                    if result.returncode != 0:
+                        warn("Push failed.")
+                        return
+                    success("Pushed.")
 
         pr_title = _pr_title_from_log()
         commit_msg = capture(["git", "log", "-1", "--format=%B"])
         ticket_id = extract_ticket_id(branch)
         url_template = resolve_ticket_url_template()
         t_link = ticket_url(ticket_id, url_template)
-        stat = diff_stat()
+        stat = capture(["git", "diff", "--stat", f"origin/{base}..HEAD"]) \
+            or capture(["git", "diff", "--stat", f"{base}..HEAD"])
 
         header("Generating PR body...")
         pr_body = generate_pr_body(ticket_id, t_link, commit_msg, stat, "")
@@ -1028,7 +1067,11 @@ class GitConsole:
             info("Aborted.")
             return
 
-        result = update_pr(title=pr_title, body=pr_body)
+        try:
+            result = update_pr(title=pr_title, body=pr_body)
+        except ValueError as exc:
+            warn(str(exc))
+            return
         success(f"PR updated: {result}")
 
     def _passthrough(self, rest: str) -> None:
