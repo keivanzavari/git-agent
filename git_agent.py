@@ -422,11 +422,11 @@ def generate_pr_body(ticket_id: str, ticket_link: str, commit_msg: str,
 # ── platform detection & PR creation ─────────────────────────────────────────
 
 def detect_platform(url: str) -> str:
-    if "github.com" in url:
+    if "github" in url:
         return "github"
-    if "gitlab.com" in url or re.search(r"gitlab\.", url):
+    if "gitlab" in url:
         return "gitlab"
-    if "bitbucket.org" in url:
+    if "bitbucket" in url:
         return "bitbucket"
     # Bitbucket Server: check if the remote URL hostname matches BITBUCKET_SERVER_URL
     server_url = os.environ.get("BITBUCKET_SERVER_URL", "")
