@@ -847,7 +847,8 @@ class GitConsole:
             b = b[:37] + "…"
         staged = len(staged_files())
         staged_part = f" {_c('33', f'+{staged}')}" if staged else ""
-        return f"{_c('96', b)}{staged_part} {_c('2', '›')} "
+        arrow = _c("93" if staged else "92", "❯")
+        return f"{_c('2', '⎇')}  {_c('96', b)}{staged_part}  {_c('35', 'git')} {arrow} "
 
     def run(self) -> None:
         self._running = True
